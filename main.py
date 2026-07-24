@@ -1,7 +1,7 @@
 # ==============================================================================
 # ADVANCED MULTI-BOT TELEGRAM BROADCASTER & USERBOT MANAGER
 # ==============================================================================
-# UPGRADED VERSION: Includes Batch Dashboards, Switch Off/On, Auto-Ban Notifications
+# UPGRADED VERSION: Includes Batch Dashboards, Switch Off/On, Auto-Ban Notifications, Add Admin
 # ==============================================================================
 
 import json
@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import os
 import re
+import random
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Union
@@ -23,7 +24,8 @@ from pyrogram.types import (
     Message as PyroMessage, 
     ChatMemberUpdated as PyroChatMemberUpdated,
     InlineKeyboardMarkup as PyroInlineKeyboardMarkup, 
-    InlineKeyboardButton as PyroInlineKeyboardButton
+    InlineKeyboardButton as PyroInlineKeyboardButton,
+    ChatPrivileges
 )
 from pyrogram.errors import (
     SessionPasswordNeeded, 
@@ -103,8 +105,8 @@ BUTTON_COLOR_STYLES = {
     SAVED_AD_BTN_NAME, SAVED_AD_BTN_LINK, SAVED_AD_BTN_COLOR,
     GLOBAL_CHANGE_DEL_TIMER, UB_BROADCAST_MSG, UB_ADD_PHONE, UB_ADD_CODE, 
     UB_ADD_2FA, UB_ADD_STRING, UB_ADD_BULK, UB_ADD_FILE, UB_RENAME,
-    SB_ADD_TOKEN, SB_ADD_NAME, BATCH_ASSIGN_BOT, UB_NEW_BATCH_NAME
-) = range(52)
+    SB_ADD_TOKEN, SB_ADD_NAME, BATCH_ASSIGN_BOT, UB_NEW_BATCH_NAME, UB_ADD_ADMIN
+) = range(53)
 
 DEFAULT_DATA = {
     "configured": False,
@@ -639,6 +641,7 @@ def userbot_single_keyboard(ub_id: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("✏️ Change Alias", callback_data=f"ub_rename_{ub_id}"), InlineKeyboardButton("📊 Get Status", callback_data=f"ub_stats_{ub_id}")],
         [InlineKeyboardButton("🤖 Check @SpamBot", callback_data=f"ub_spambot_{ub_id}"), InlineKeyboardButton("👑 Check Owner/Admin", callback_data=f"ub_owner_{ub_id}")],
         [InlineKeyboardButton("📢 Broadcast to Admin Groups", callback_data=f"ub_bcast_{ub_id}")],
+        [InlineKeyboardButton("👮 Add Admin (Anon)", callback_data=f"ub_addadmin_{ub_id}")],
         [InlineKeyboardButton("🔄 Move to Another Batch", callback_data=f"ub_chbatch_{ub_id}")],
         [InlineKeyboardButton(bc_text, callback_data=f"ub_togbc_{ub_id}")],
         [InlineKeyboardButton("🛑 Terminate Other Sessions", callback_data=f"ub_termother_{ub_id}")],
@@ -1365,6 +1368,62 @@ async def run_userbot_admin_broadcast(update: Update, context: ContextTypes.DEFA
     return ConversationHandler.END
 
 
+async def run_userbot_add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg_text = update.effective_message.text.strip()
+    usernames = [u.strip() for u in msg_text.split('\n') if u.strip()]
+    ub_id = context.user_data.get('ub_addadmin_id')
+    data = load_data()
+    session_str = data["userbots"][ub_id]["session"]
+    alias = data["userbots"][ub_id]["alias"]
+
+    reply = await update.effective_message.reply_text("⏳ Processing Add Admin task... This will take some time due to random anti-ban delays.\n\nI will send live confirmations to your Logger bot.")
+
+    try:
+        client = Client(name=ub_id, session_string=session_str, api_id=API_ID, api_hash=API_HASH, in_memory=True)
+        await client.connect()
+
+        admin_chats = await safe_get_admin_chats(client)
+        sent, failed = 0, 0
+
+        privs = ChatPrivileges(
+            is_anonymous=True,
+            can_manage_chat=True,
+            can_delete_messages=True,
+            can_manage_video_chats=True,
+            can_restrict_members=True,
+            can_promote_members=True,
+            can_change_info=True,
+            can_invite_users=True,
+            can_pin_messages=True
+        )
+
+        for g in admin_chats:
+            chat_id = g["id"]
+            chat_title = g["title"]
+
+            for username in usernames:
+                await asyncio.sleep(random.uniform(3, 7))
+                try:
+                    try:
+                        await client.add_chat_members(chat_id, username)
+                        await asyncio.sleep(1)
+                    except Exception:
+                        pass 
+
+                    await client.promote_chat_member(chat_id, username, privileges=privs)
+                    sent += 1
+                    await send_to_logger(f"✅ <b>Admin Added Successfully</b>\n<b>Account:</b> {alias}\n<b>Group:</b> {chat_title}\n<b>User:</b> {username}\n<b>Status:</b> Full Rights + Anonymous On")
+                except Exception as e:
+                    failed += 1
+                    await send_to_logger(f"❌ <b>Admin Add Failed</b>\n<b>Account:</b> {alias}\n<b>Group:</b> {chat_title}\n<b>User:</b> {username}\n<b>Error:</b> {e}")
+
+        await client.disconnect()
+        await reply.edit_text(f"✅ Add Admin Task Complete for {alias}!\n\n📤 Successfully Promoted: {sent} times\n❌ Failed: {failed} times\n\nCheck Logger Bot for detailed reports.", reply_markup=userbot_single_keyboard(ub_id))
+    except Exception as e:
+        await reply.edit_text(f"❌ Error during Add Admin task: {e}", reply_markup=userbot_single_keyboard(ub_id))
+    return ConversationHandler.END
+
+
 # ==============================================================================
 # 13. MAIN COMMAND HANDLERS
 # ==============================================================================
@@ -1513,6 +1572,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['ub_broadcast_id'] = ub_id
         await query.edit_message_text("📢 Send the message you want to broadcast to all Admin/Owner groups from this Userbot (Supports HTML):", reply_markup=cancel_keyboard())
         return UB_BROADCAST_MSG
+        
+    if cd.startswith("ub_addadmin_"):
+        ub_id = cd.replace("ub_addadmin_", "")
+        context.user_data['ub_addadmin_id'] = ub_id
+        await query.edit_message_text("👮 <b>Add Admin (Anonymous)</b>\n\nकृपया उन यूज़रनेम (Usernames) की लिस्ट भेजें जिन्हें आप एडमिन बनाना चाहते हैं।\nएक यूज़रनेम प्रति लाइन (e.g., @username1\n@username2):", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return UB_ADD_ADMIN
         
     if cd.startswith("ub_delete_"):
         ub_id = cd[10:]
@@ -2913,6 +2978,7 @@ def main():
             SB_ADD_TOKEN: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_sb_add_token)],
             SB_ADD_NAME: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_sb_add_name)],
             UB_NEW_BATCH_NAME: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_ub_new_batch_name)],
+            UB_ADD_ADMIN: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, run_userbot_add_admin)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
