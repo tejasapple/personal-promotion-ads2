@@ -1433,8 +1433,8 @@ async def run_userbot_add_admin(update: Update, context: ContextTypes.DEFAULT_TY
         admin_chats = await safe_get_admin_chats(client)
         sent, failed = 0, 0
 
+        # ==== 🚨 [FIXED] ADDED FULL CHANNEL & GROUP RIGHTS HERE 🚨 ====
         privs = ChatPrivileges(
-            is_anonymous=True,
             can_manage_chat=True,
             can_delete_messages=True,
             can_manage_video_chats=True,
@@ -1442,7 +1442,11 @@ async def run_userbot_add_admin(update: Update, context: ContextTypes.DEFAULT_TY
             can_promote_members=True,
             can_change_info=True,
             can_invite_users=True,
-            can_pin_messages=True
+            can_pin_messages=True,
+            can_post_messages=True,    # 👈 Fix for Channel Post Broadcast Issue
+            can_edit_messages=True,    # 👈 Fix for Channel Edit Message
+            can_manage_topics=True,    # 👈 Fix for Supergroups with forums
+            is_anonymous=True          # 👈 Ensures Anonymous/Enormous rights
         )
 
         for g in admin_chats:
@@ -1469,14 +1473,14 @@ async def run_userbot_add_admin(update: Update, context: ContextTypes.DEFAULT_TY
                     except Exception:
                         pass 
 
-                    # 4. Promote to Admin
+                    # 4. Promote to Admin (Now with 100% Full Rights)
                     await client.promote_chat_member(actual_chat_id, target_user.id, privileges=privs)
                     
                     sent += 1
-                    await send_to_logger(f"✅ <b>Admin Added Successfully</b>\n<b>Account:</b> {alias}\n<b>Group:</b> {chat_title}\n<b>User:</b> {username}\n<b>Status:</b> Full Rights + Anonymous On")
+                    await send_to_logger(f"✅ <b>Admin Added Successfully</b>\n<b>Account:</b> {alias}\n<b>Group/Channel:</b> {chat_title}\n<b>User:</b> {username}\n<b>Status:</b> Full Rights + Anonymous On")
                 except Exception as e:
                     failed += 1
-                    await send_to_logger(f"❌ <b>Admin Add Failed</b>\n<b>Account:</b> {alias}\n<b>Group:</b> {chat_title}\n<b>User:</b> {username}\n<b>Error:</b> {e}")
+                    await send_to_logger(f"❌ <b>Admin Add Failed</b>\n<b>Account:</b> {alias}\n<b>Group/Channel:</b> {chat_title}\n<b>User:</b> {username}\n<b>Error:</b> {e}")
 
         await client.disconnect()
         await reply.edit_text(f"✅ Add Admin Task Complete for {alias}!\n\n📤 Successfully Promoted: {sent} times\n❌ Failed: {failed} times\n\nCheck Logger Bot for detailed reports.", reply_markup=userbot_single_keyboard(ub_id))
