@@ -134,7 +134,7 @@ DEFAULT_DATA = {
         "1": {}, "2": {}, "3": {}, "4": {}, "5": {}
     }, 
     "sub_bots": {}, 
-    "userbot_batches": ["Fresh", "Admin", "Used", "Unauthorized", "Unused"], 
+    "userbot_batches": ["Used", "Unused", "Fresh", "Admin", "Unauthorized"], 
     "userbots": {}  
 }
 
@@ -588,7 +588,7 @@ def subbots_keyboard() -> InlineKeyboardMarkup:
 
 def userbots_keyboard() -> InlineKeyboardMarkup:
     data = load_data()
-    batches = data.get("userbot_batches", ["Fresh", "Admin", "Used", "Unauthorized", "Unused"])
+    batches = data.get("userbot_batches", ["Used", "Unused", "Fresh", "Admin", "Unauthorized"])
     kb = []
     
     # Show batches only
@@ -619,7 +619,7 @@ def userbot_batch_view_keyboard(batch: str) -> InlineKeyboardMarkup:
 
 def ub_batch_selection_keyboard(ub_id: str) -> InlineKeyboardMarkup:
     data = load_data()
-    batches = data.get("userbot_batches", ["Fresh", "Admin", "Used", "Unauthorized", "Unused"])
+    batches = data.get("userbot_batches", ["Used", "Unused", "Fresh", "Admin", "Unauthorized"])
     kb = []
     row = []
     for batch in batches:
@@ -1531,9 +1531,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if cd == "ub_add_menu":
         kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("♻️ Used", callback_data="ub_addbatch_Used"), InlineKeyboardButton("📦 Unused", callback_data="ub_addbatch_Unused")],
             [InlineKeyboardButton("📁 Fresh", callback_data="ub_addbatch_Fresh"), InlineKeyboardButton("🛡️ Admin", callback_data="ub_addbatch_Admin")],
-            [InlineKeyboardButton("♻️ Used", callback_data="ub_addbatch_Used"), InlineKeyboardButton("🚫 Unauthorized", callback_data="ub_addbatch_Unauthorized")],
-            [InlineKeyboardButton("📦 Unused", callback_data="ub_addbatch_Unused")],
+            [InlineKeyboardButton("🚫 Unauthorized", callback_data="ub_addbatch_Unauthorized")],
             [InlineKeyboardButton("🔙 Cancel", callback_data="userbots_menu")]
         ])
         await query.edit_message_text("➕ <b>Add Userbot Account</b>\n\n📂 <b>First, choose the Batch</b> where this account(s) should be placed:", parse_mode="HTML", reply_markup=kb)
