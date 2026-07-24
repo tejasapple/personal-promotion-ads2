@@ -1443,10 +1443,9 @@ async def run_userbot_add_admin(update: Update, context: ContextTypes.DEFAULT_TY
             can_change_info=True,
             can_invite_users=True,
             can_pin_messages=True,
-            can_post_messages=True,    # 👈 Fix for Channel Post Broadcast Issue
-            can_edit_messages=True,    # 👈 Fix for Channel Edit Message
-            can_manage_topics=True,    # 👈 Fix for Supergroups with forums
-            is_anonymous=True          # 👈 Ensures Anonymous/Enormous rights
+            can_post_messages=True,    
+            can_edit_messages=True,    
+            is_anonymous=True          
         )
 
         for g in admin_chats:
