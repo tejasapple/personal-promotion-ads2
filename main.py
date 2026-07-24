@@ -134,7 +134,7 @@ DEFAULT_DATA = {
         "1": {}, "2": {}, "3": {}, "4": {}, "5": {}
     }, 
     "sub_bots": {}, 
-    "userbot_batches": ["Fresh", "Admin", "Used", "Unused"], 
+    "userbot_batches": ["Fresh", "Admin", "Used", "Unauthorized", "Unused"], 
     "userbots": {}  
 }
 
@@ -588,8 +588,8 @@ def subbots_keyboard() -> InlineKeyboardMarkup:
 
 def userbots_keyboard() -> InlineKeyboardMarkup:
     data = load_data()
+    batches = data.get("userbot_batches", ["Fresh", "Admin", "Used", "Unauthorized", "Unused"])
     kb = []
-    batches = data.get("userbot_batches", ["Fresh", "Admin", "Used", "Unused"])
     
     # Show batches only
     for b in batches:
@@ -619,7 +619,7 @@ def userbot_batch_view_keyboard(batch: str) -> InlineKeyboardMarkup:
 
 def ub_batch_selection_keyboard(ub_id: str) -> InlineKeyboardMarkup:
     data = load_data()
-    batches = data.get("userbot_batches", ["Fresh", "Admin", "Used", "Unused"])
+    batches = data.get("userbot_batches", ["Fresh", "Admin", "Used", "Unauthorized", "Unused"])
     kb = []
     row = []
     for batch in batches:
@@ -1404,13 +1404,26 @@ async def run_userbot_add_admin(update: Update, context: ContextTypes.DEFAULT_TY
             for username in usernames:
                 await asyncio.sleep(random.uniform(3, 7))
                 try:
+                    # 1. Resolve target user safely
+                    target_user = await client.get_users(username)
+                    
+                    # 2. Force Pyrogram to update its internal entity cache for this specific chat
                     try:
-                        await client.add_chat_members(chat_id, username)
+                        chat_obj = await client.get_chat(chat_id)
+                        actual_chat_id = chat_obj.id
+                    except Exception:
+                        actual_chat_id = chat_id
+                        
+                    # 3. Try to add them to the chat first (may silently fail for bots in channels, which is fine)
+                    try:
+                        await client.add_chat_members(actual_chat_id, target_user.id)
                         await asyncio.sleep(1)
                     except Exception:
                         pass 
 
-                    await client.promote_chat_member(chat_id, username, privileges=privs)
+                    # 4. Promote to Admin
+                    await client.promote_chat_member(actual_chat_id, target_user.id, privileges=privs)
+                    
                     sent += 1
                     await send_to_logger(f"✅ <b>Admin Added Successfully</b>\n<b>Account:</b> {alias}\n<b>Group:</b> {chat_title}\n<b>User:</b> {username}\n<b>Status:</b> Full Rights + Anonymous On")
                 except Exception as e:
@@ -1518,46 +1531,67 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if cd == "ub_add_menu":
         kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📁 Fresh", callback_data="ub_addbatch_Fresh"), InlineKeyboardButton("🛡️ Admin", callback_data="ub_addbatch_Admin")],
+            [InlineKeyboardButton("♻️ Used", callback_data="ub_addbatch_Used"), InlineKeyboardButton("🚫 Unauthorized", callback_data="ub_addbatch_Unauthorized")],
+            [InlineKeyboardButton("📦 Unused", callback_data="ub_addbatch_Unused")],
+            [InlineKeyboardButton("🔙 Cancel", callback_data="userbots_menu")]
+        ])
+        await query.edit_message_text("➕ <b>Add Userbot Account</b>\n\n📂 <b>First, choose the Batch</b> where this account(s) should be placed:", parse_mode="HTML", reply_markup=kb)
+        return ConversationHandler.END
+        
+    if cd.startswith("ub_addbatch_"):
+        batch = cd.split("_")[2]
+        context.user_data['pending_add_batch'] = batch
+        kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("📱 Login via Phone", callback_data="ub_add_phone"), InlineKeyboardButton("🔑 Session String", callback_data="ub_add_string")],
             [InlineKeyboardButton("🗃️ Bulk Strings", callback_data="ub_add_bulk"), InlineKeyboardButton("📁 Upload File", callback_data="ub_add_file")],
             [InlineKeyboardButton("🔙 Back", callback_data="userbots_menu")]
         ])
-        await query.edit_message_text("➕ <b>Add Userbot Account</b>\n\nChoose a method to login:", parse_mode="HTML", reply_markup=kb)
-        return ConversationHandler.END
-        
-    if cd in ["ub_add_phone", "ub_add_string", "ub_add_bulk", "ub_add_file"]:
-        context.user_data['pending_add_method'] = cd
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📁 Fresh", callback_data="ub_addbatch_Fresh"), InlineKeyboardButton("🛡️ Admin", callback_data="ub_addbatch_Admin")],
-            [InlineKeyboardButton("♻️ Used", callback_data="ub_addbatch_Used"), InlineKeyboardButton("📦 Unused", callback_data="ub_addbatch_Unused")],
-            [InlineKeyboardButton("🔙 Cancel", callback_data="userbots_menu")]
-        ])
-        await query.edit_message_text("📂 <b>First, choose the Batch</b> where this account(s) should be placed:", parse_mode="HTML", reply_markup=kb)
+        await query.edit_message_text(f"Batch: {batch} 📁\n\nChoose a method to login:", parse_mode="HTML", reply_markup=kb)
         return ConversationHandler.END
 
-    if cd.startswith("ub_addbatch_"):
-        batch = cd.split("_")[2]
-        context.user_data['pending_add_batch'] = batch
-        method = context.user_data.get('pending_add_method')
+    if cd in ["ub_add_phone", "ub_add_string", "ub_add_bulk", "ub_add_file"]:
+        context.user_data['pending_add_method'] = cd
+        batch = context.user_data.get('pending_add_batch', 'Unused')
         
-        if method == "ub_add_phone":
+        if cd == "ub_add_phone":
             await query.edit_message_text(f"Batch: {batch} 📁\n\n📱 Send the Phone Number in international format (e.g., +91...):", reply_markup=cancel_keyboard())
             return UB_ADD_PHONE
-        elif method == "ub_add_string":
+        elif cd == "ub_add_string":
             await query.edit_message_text(f"Batch: {batch} 📁\n\n🔑 Send the Pyrogram Session String:", reply_markup=cancel_keyboard())
             return UB_ADD_STRING
-        elif method == "ub_add_bulk":
+        elif cd == "ub_add_bulk":
             await query.edit_message_text(f"Batch: {batch} 📁\n\n🗃️ Send Bulk Session Strings (one per line):", reply_markup=cancel_keyboard())
             return UB_ADD_BULK
-        elif method == "ub_add_file":
+        elif cd == "ub_add_file":
             await query.edit_message_text(f"Batch: {batch} 📁\n\n📁 Upload a Pyrogram `.session` file OR `.txt` bulk backup file:", reply_markup=cancel_keyboard())
             return UB_ADD_FILE
     
     if cd.startswith("ub_view_"):
         ub_id = cd[8:]
-        batch = data['userbots'][ub_id].get('batch', 'Unused')
-        status = "🔴 Dead" if data['userbots'][ub_id]['status'] != "active" else ("💤 Offline" if data['userbots'][ub_id].get('is_offline') else "🟢 Active")
-        txt = f"📱 <b>Account Dashboard:</b> {data['userbots'][ub_id]['alias']}\n\n📁 <b>Batch:</b> {batch}\nСтатус Status: {status}\n🤖 Spambot: {data['userbots'][ub_id]['spambot']}"
+        if ub_id not in data['userbots']: 
+            return ConversationHandler.END
+            
+        ub_info = data['userbots'][ub_id]
+        
+        # Auto-fetch phone dynamically if missing and account is active
+        if "phone" not in ub_info and ub_info.get("status") == "active" and not ub_info.get("is_offline"):
+            try:
+                client = Client(name=ub_id, session_string=ub_info["session"], api_id=API_ID, api_hash=API_HASH, in_memory=True)
+                await client.connect()
+                me = await client.get_me()
+                ub_info["phone"] = me.phone_number or "Hidden/Unknown"
+                await client.disconnect()
+                save_data(data)
+            except Exception:
+                ub_info["phone"] = "Error fetching"
+                
+        phone_str = ub_info.get("phone", "Unknown")
+        
+        batch = ub_info.get('batch', 'Unused')
+        status = "🔴 Dead" if ub_info['status'] != "active" else ("💤 Offline" if ub_info.get('is_offline') else "🟢 Active")
+        bc = "📡" if ub_info.get('is_broadcasting') else ""
+        txt = f"📱 <b>Account Dashboard:</b> {ub_info['alias']}\n\n📞 <b>Number:</b> <code>+{phone_str}</code>\n📁 <b>Batch:</b> {batch}\nСтатус Status: {status} {bc}\n🤖 Spambot: {ub_info['spambot']}"
         await query.edit_message_text(txt, parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
         return ConversationHandler.END
         
@@ -1597,8 +1631,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 client = Client(name=u_id, session_string=info["session"], api_id=API_ID, api_hash=API_HASH, in_memory=True)
                 await client.connect()
-                await client.get_me()
+                me = await client.get_me()
                 info["status"] = "active"
+                info["phone"] = me.phone_number or "Hidden/Unknown"
                 active += 1
                 await client.disconnect()
             except Exception:
