@@ -1092,86 +1092,86 @@ async def batch_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 # ==============================================================================
 
 async def safe_get_admin_chats(client: Client) -> list:
-    admin_chats = []
-    
+    """
+    UPGRADED: First uses Raw API to guarantee we find all Admin/Owner roles accurately,
+    then iterates using Pyrogram safely to fill in member counts.
+    """
+    admin_chats_dict = {}
+
+    # 1. Fast, highly accurate Raw API check to find Admin/Owner roles
+    try:
+        offset_date = 0
+        offset_id = 0
+        offset_peer = raw.types.InputPeerEmpty()
+        limit = 100
+
+        while True:
+            r = await client.invoke(
+                raw.functions.messages.GetDialogs(
+                    offset_date=offset_date,
+                    offset_id=offset_id,
+                    offset_peer=offset_peer,
+                    limit=limit,
+                    hash=0
+                )
+            )
+
+            for c in r.chats:
+                if isinstance(c, (raw.types.Chat, raw.types.Channel)):
+                    is_owner = getattr(c, 'creator', False)
+                    has_admin = getattr(c, 'admin_rights', None) is not None
+
+                    if is_owner or has_admin:
+                        cid = c.id
+                        real_id = int(f"-100{cid}") if isinstance(c, raw.types.Channel) else int(f"-{cid}")
+                        role = "OWNER" if is_owner else "ADMINISTRATOR"
+                        admin_chats_dict[real_id] = {
+                            "id": real_id,
+                            "title": getattr(c, 'title', 'Unknown'),
+                            "members": getattr(c, 'participants_count', 0) or 0,
+                            "role": role
+                        }
+
+            if not r.dialogs or len(r.dialogs) < limit:
+                break
+
+            if r.messages:
+                last_msg = r.messages[-1]
+                offset_id = last_msg.id
+                offset_date = last_msg.date
+                offset_peer = raw.types.InputPeerEmpty()
+            else:
+                break
+    except Exception as raw_e:
+        logger.error(f"Raw GetDialogs failed: {raw_e}")
+
+    # 2. Pyrogram High-Level iteration for robust member counting
     try:
         async for dialog in client.get_dialogs():
             chat = dialog.chat
             if not chat or chat.type not in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL]: 
                 continue
-                
-            is_owner = getattr(chat, 'is_creator', False)
-            is_admin = getattr(chat, 'privileges', None) is not None
-            
-            if is_owner or is_admin:
-                admin_chats.append({
+
+            # Determine Role safely
+            role = None
+            if getattr(chat, 'is_creator', False):
+                role = "OWNER"
+            elif getattr(chat, 'privileges', None) is not None:
+                role = "ADMINISTRATOR"
+            elif chat.id in admin_chats_dict:
+                role = admin_chats_dict[chat.id]["role"] # Retrieve role from Raw API if Pyrogram missed it
+
+            if role:
+                admin_chats_dict[chat.id] = {
                     "id": chat.id,
                     "title": chat.title or "Unknown Group",
-                    "members": getattr(chat, 'members_count', 0) or 0,
-                    "role": "OWNER" if is_owner else "ADMINISTRATOR"
-                })
+                    "members": getattr(chat, 'members_count', getattr(chat, 'participants_count', 0)) or admin_chats_dict.get(chat.id, {}).get("members", 0),
+                    "role": role
+                }
     except Exception as e:
         logger.error(f"Pyrogram get_dialogs fallback caught: {e}")
 
-    if not admin_chats:
-        try:
-            offset_date = 0
-            offset_id = 0
-            offset_peer = raw.types.InputPeerEmpty()
-            limit = 100
-            
-            while True:
-                r = await client.invoke(
-                    raw.functions.messages.GetDialogs(
-                        offset_date=offset_date,
-                        offset_id=offset_id,
-                        offset_peer=offset_peer,
-                        limit=limit,
-                        hash=0
-                    )
-                )
-                
-                for c in r.chats:
-                    if isinstance(c, (raw.types.Chat, raw.types.Channel)):
-                        is_owner = getattr(c, 'creator', False)
-                        has_admin = getattr(c, 'admin_rights', None) is not None
-                        
-                        if is_owner or has_admin:
-                            title = getattr(c, 'title', 'Unknown Group')
-                            members = getattr(c, 'participants_count', 0)
-                            role = "OWNER" if is_owner else "ADMINISTRATOR"
-                            
-                            cid = c.id
-                            if isinstance(c, raw.types.Channel):
-                                real_id = int(f"-100{cid}")
-                            else:
-                                real_id = int(f"-{cid}")
-                                
-                            admin_chats.append({
-                                "id": real_id,
-                                "title": title,
-                                "members": members,
-                                "role": role
-                            })
-                            
-                if not r.dialogs or len(r.dialogs) < limit:
-                    break
-                    
-                if r.messages:
-                    last_msg = r.messages[-1]
-                    offset_id = last_msg.id
-                    offset_date = last_msg.date
-                    offset_peer = raw.types.InputPeerEmpty()
-                else:
-                    break
-        except Exception as raw_e:
-            logger.error(f"Raw GetDialogs fallback failed: {raw_e}")
-
-    unique_chats = {}
-    for chat in admin_chats:
-        unique_chats[chat["id"]] = chat
-    
-    return list(unique_chats.values())
+    return list(admin_chats_dict.values())
 
 async def run_fetch_latest_otp(update: Update, context: ContextTypes.DEFAULT_TYPE, ub_id: str):
     data = load_data()
@@ -1282,12 +1282,25 @@ async def run_userbot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             await update.callback_query.message.edit_text(f"📊 <b>Stats for {alias}</b>\n\nNot an Admin/Owner in any active groups.", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
             return
             
-        admin_groups.sort(key=lambda x: x["members"], reverse=True)
-        highest = admin_groups[0]
+        owner_list = []
+        admin_list = []
+
+        for g in admin_groups:
+            if g["role"] == "OWNER":
+                owner_list.append(f"👑 {g['title']} - 👥 {g['members']} Members")
+            else:
+                admin_list.append(f"🛡 {g['title']} - 👥 {g['members']} Members")
         
-        text = f"📊 <b>Account Stats for {alias}</b>\n\n👑 <b>Total Groups/Channels (Admin/Owner):</b> {len(admin_groups)}\n"
-        text += f"📈 <b>Highest Members:</b> {highest['title']} ({highest['members']} Members)\n\n<b>Detailed List:</b>\n"
-        for g in admin_groups: text += f"- {g['title']} | Members: {g['members']} | Role: {g['role']}\n"
+        highest = max(admin_groups, key=lambda x: x["members"])
+        
+        text = f"📊 <b>Account Stats for {alias}</b>\n\n"
+        text += f"👑 <b>Total Groups/Channels (Admin/Owner):</b> {len(admin_groups)}\n"
+        text += f"📈 <b>Highest Members:</b> {highest['title']} ({highest['members']} Members)\n\n"
+        
+        text += f"👤 <b>OWNER ({len(owner_list)}):</b>\n"
+        text += "\n".join(owner_list) if owner_list else "None"
+        text += f"\n\n🛡 <b>ADMIN ({len(admin_list)}):</b>\n"
+        text += "\n".join(admin_list) if admin_list else "None"
         
         if len(text) > 3900: text = text[:3900] + "\n... (truncated)"
         
@@ -1312,9 +1325,9 @@ async def run_check_owner_admin(update: Update, context: ContextTypes.DEFAULT_TY
         
         for g in admin_chats:
             if g["role"] == "OWNER":
-                owner_groups.append(f"👑 {g['title']} (👥 {g['members']} members)")
+                owner_groups.append(f"👑 {g['title']} - 👥 {g['members']} Members")
             else:
-                admin_groups.append(f"🛡 {g['title']} (👥 {g['members']} members)")
+                admin_groups.append(f"🛡 {g['title']} - 👥 {g['members']} Members")
 
         await client.disconnect()
         
