@@ -414,7 +414,7 @@ async def start_subbot_listener(token: str, name: str) -> None:
                 session["step"] = "BTN_COLOR"
                 kb = PyroInlineKeyboardMarkup([
                     [PyroInlineKeyboardButton("🔵 Blue", callback_data="sbcol_blue"), PyroInlineKeyboardButton("🟢 Green", callback_data="sbcol_green")],
-                    [PyroInlineKeyboardButton("🔴 Red", callback_data="sbcol_red"), PyroInlineKeyboardButton("⚪ Default", callback_data="sbcol_default")]
+                    [PyroInlineKeyboardButton("🔴 Red", callback_data="sbcol_default"), PyroInlineKeyboardButton("⚪ Default", callback_data="sbcol_default")]
                 ])
                 await message.reply_text("Choose Button Color:", reply_markup=kb)
 
@@ -2988,17 +2988,24 @@ async def send_restart_auto_backup(token: str, chat_id: int, count: int, session
 async def post_init(application: Application) -> None:
     data = load_data()
     
-    if data.get("started") and data.get("configured") and has_ad_config(data):
-        delay = max(1, int(data.get("delay", 30)))
-        application.job_queue.run_repeating(ads_cycle_job, interval=delay, first=delay, name=ADS_JOB_NAME)
-        
-    for bname, bdata in data.get("batches", {}).items():
-        if bdata.get("settings", {}).get("auto_broadcast") and bdata.get("msg_id"):
-            delay = max(1, int(bdata["settings"].get("delay", 30)))
-            application.job_queue.run_repeating(batch_cycle_job, interval=delay, first=delay, data=bname, name=f"batch_job_{bname}")
+    # [FIX] Added check for application.job_queue to prevent NoneType Error
+    if application.job_queue:
+        if data.get("started") and data.get("configured") and has_ad_config(data):
+            delay = max(1, int(data.get("delay", 30)))
+            application.job_queue.run_repeating(ads_cycle_job, interval=delay, first=delay, name=ADS_JOB_NAME)
+            
+        for bname, bdata in data.get("batches", {}).items():
+            if bdata.get("settings", {}).get("auto_broadcast") and bdata.get("msg_id"):
+                delay = max(1, int(bdata["settings"].get("delay", 30)))
+                application.job_queue.run_repeating(batch_cycle_job, interval=delay, first=delay, data=bname, name=f"batch_job_{bname}")
 
-    for token, info in data.get("sub_bots", {}).items():
-        application.create_task(start_subbot_listener(token, info["name"]))
+        for token, info in data.get("sub_bots", {}).items():
+            application.create_task(start_subbot_listener(token, info["name"]))
+
+        # Schedule Auto-Ban/Dead check every 9 hours
+        application.job_queue.run_repeating(auto_refresh_userbots_job, interval=9 * 3600, first=3600)
+    else:
+        logger.warning("Job queue is missing (APScheduler not installed). Auto-broadcasting is disabled to prevent crashes.")
 
     # 🚀 VPS AUTO-RESTORE SYSTEM & LOGGER BACKUP EXPORT
     active_userbots = 0
@@ -3012,9 +3019,6 @@ async def post_init(application: Application) -> None:
 
     logger.info(f"Scheduled {active_userbots} Active Userbots for deep-listener reconnects.")
     
-    # Schedule Auto-Ban/Dead check every 9 hours
-    application.job_queue.run_repeating(auto_refresh_userbots_job, interval=9 * 3600, first=3600)
-    
     if sessions_txt and LOGGER_BOT_TOKEN and LOGGER_CHAT_ID:
         try:
             with open("auto_backup_sessions.txt", "w", encoding="utf-8") as f: f.write(sessions_txt)
@@ -3022,12 +3026,26 @@ async def post_init(application: Application) -> None:
         except Exception as e:
             logger.error(f"Failed to prep restart backup: {e}")
 
+# [FIX] Added Graceful Shutdown hook to resolve asyncio pending tasks error
+async def post_stop(application: Application) -> None:
+    logger.info("Gracefully shutting down all pyrogram clients...")
+    for ub_id, client in list(userbot_clients.items()):
+        try:
+            await client.stop()
+        except Exception:
+            pass
+    for token, client in list(sub_bot_clients.items()):
+        try:
+            await client.stop()
+        except Exception:
+            pass
 
 def main():
     if BOT_TOKEN == "PASTE_YOUR_NEW_BOT_TOKEN_HERE":
         raise RuntimeError("Paste your NEW bot token in BOT_TOKEN first.")
 
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    # [FIX] Registered post_stop function for graceful shutdown
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).post_stop(post_stop).build()
 
     conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(callback_handler, pattern="^(?!(color_|sbcol_|confirm_broadcast|cancel_broadcast|cancel_state)).*$")],
