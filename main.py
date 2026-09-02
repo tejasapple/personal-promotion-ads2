@@ -111,7 +111,7 @@ BUTTON_COLOR_STYLES = {
     SB_ADD_TOKEN, SB_ADD_NAME, BATCH_ASSIGN_BOT, UB_NEW_BATCH_NAME, UB_ADD_ADMIN,
     SET_DUMP_CHANNEL, POSTER_MSG, POSTER_BTN_COUNT, POSTER_BTN_NAME, POSTER_BTN_LINK, 
     POSTER_BTN_COLOR
-) = range(61) # Increased by 1 just in case, ensuring POSTER_BTN_COLOR works
+) = range(60) # Increased by 1 just in case, ensuring POSTER_BTN_COLOR works
 
 DEFAULT_DATA = {
     "configured": False,
