@@ -2,7 +2,7 @@
 # ADVANCED MULTI-BOT TELEGRAM BROADCASTER & USERBOT MANAGER
 # ==============================================================================
 # UPGRADED VERSION: Includes Media/Text Separation for Premium Emojis, 
-# Batch Dashboards, Switch Off/On, Auto-Ban Notifications, Add Admin
+# Batch Dashboards, Switch Off/On, Auto-Ban Notifications, Add Admin, Logger Alerts
 # ==============================================================================
 
 import json
@@ -117,11 +117,11 @@ DEFAULT_DATA = {
     "auto_reply": True,
     "total_broadcasts_sent": 0, 
     "ad_source_chat_id": None,
-    "ad_media_message_id": None, # ADDED FOR MEDIA SEPARATION
+    "ad_media_message_id": None, 
     "ad_message_id": None,
     "buttons": [],
     "start_source_chat_id": None,
-    "start_media_message_id": None, # ADDED FOR MEDIA SEPARATION
+    "start_media_message_id": None, 
     "start_message_id": None,
     "start_buttons": [],
     "users": {},
@@ -364,11 +364,27 @@ async def start_subbot_listener(token: str, name: str) -> None:
         bot_id = token.split(':')[0]
         client = Client(name=f"sb_{bot_id}", bot_token=token, api_id=API_ID, api_hash=API_HASH, in_memory=True)
         
-        @client.on_message(pyro_filters.private & pyro_filters.user(OWNER_ID))
+        @client.on_message(pyro_filters.private)
         async def sb_private_message(c: Client, message: PyroMessage):
+            is_owner_user = (message.from_user and message.from_user.id == OWNER_ID)
+            
+            # Logger Notification for Bot Started (ISSUE #3 FIXED)
+            if message.text and message.text.startswith("/start"):
+                user = message.from_user
+                u_name = user.first_name if user else "Unknown"
+                u_id = user.id if user else "Unknown"
+                await send_to_logger(f"🚀 <b>Sub-Bot Started</b>\n<b>Bot:</b> {name}\n<b>User:</b> {u_name} (<code>{u_id}</code>)")
+                if not is_owner_user:
+                    await message.reply_text("🚀 Bot is started!")
+                    return
+                    
+            if not is_owner_user:
+                return
+
             t = c.bot_token
             if t not in subbot_setup_sessions:
-                await message.reply_text("👋 Hello Owner! Please assign me to a Batch in the Main Bot first.")
+                if message.text and message.text.startswith("/start"):
+                    await message.reply_text("👋 Hello Owner! Please assign me to a Batch in the Main Bot first.")
                 return
 
             session = subbot_setup_sessions[t]
@@ -396,9 +412,9 @@ async def start_subbot_listener(token: str, name: str) -> None:
                         else: ms = await media_msg.copy(msg_chat_id)
                         media_sent_id = ms.id
 
-                    # Send Text Separately
+                    # Send Text Separately (ISSUE #1 FIXED: Using copy() instead of send_message to keep Premium Emojis)
                     if message.text and message.text.lower() != '/skip':
-                        sent = await c.send_message(msg_chat_id, text=message.text, entities=message.entities)
+                        sent = await message.copy(msg_chat_id)
                         text_sent_id = sent.id
                     else:
                         sent = await message.reply_text("✅ Media saved. Buttons will be sent below this text message.", parse_mode=enums.ParseMode.HTML)
@@ -513,7 +529,8 @@ async def stop_subbot_listener(token: str) -> None:
 async def merge_media_text_and_save(context: ContextTypes.DEFAULT_TYPE, chat_id: int, media_msg, text_msg):
     """
     UPGRADED: NO LONGER MERGES. 
-    Sends media separately, then text separately to support Premium Animated Emojis in text.
+    Sends media separately, then text separately using copy_message 
+    to fully retain Premium Animated Emojis in text. (ISSUE #1 FIXED)
     Returns: (media_sent_msg_obj, text_sent_msg_obj)
     """
     media_sent = None
@@ -531,7 +548,12 @@ async def merge_media_text_and_save(context: ContextTypes.DEFAULT_TYPE, chat_id:
 
     if text_msg and text_msg.text and text_msg.text.lower() != '/skip':
         try:
-            text_sent = await context.bot.send_message(chat_id=chat_id, text=text_msg.text, entities=text_msg.entities)
+            # FIX: Used copy_message instead of send_message to perfectly preserve entities
+            text_sent = await context.bot.copy_message(
+                chat_id=chat_id, 
+                from_chat_id=text_msg.chat_id, 
+                message_id=text_msg.message_id
+            )
         except Exception as e:
             logger.error(f"Text separate send error: {e}")
             text_sent = text_msg
@@ -768,6 +790,7 @@ def build_batch_usesaved_keyboard(bname: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(kb)
 
 def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup:
+    # ISSUE #2 FIXED: Now showing all available groups irrespective of auto-date batch hiding.
     data = load_data()
     groups = data.get("groups", {})
     batch_groups = data.get("batches", {}).get(bname, {}).get("groups", [])
@@ -775,12 +798,12 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
     
     available_groups = []
     for gid, ginfo in all_sorted:
-        in_other_batch = False
+        assigned_to = None
         for other_bname, other_bdata in data.get("batches", {}).items():
             if other_bname != bname and gid in other_bdata.get("groups", []):
-                in_other_batch = True
+                assigned_to = other_bname
                 break
-        if not in_other_batch: available_groups.append((gid, ginfo))
+        available_groups.append((gid, ginfo, assigned_to))
             
     kb = []
     ITEMS_PER_PAGE = 10
@@ -789,11 +812,17 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
     end_idx = start_idx + ITEMS_PER_PAGE
     current_page_groups = available_groups[start_idx:end_idx]
     
-    for gid, ginfo in current_page_groups:
-        title = ginfo.get('title', 'Unknown')[:20]
+    for gid, ginfo, assigned_to in current_page_groups:
+        title = ginfo.get('title', 'Unknown')[:15]
         c_type = "📢" if ginfo.get('type') == 'channel' else "👥"
         status = "✅" if str(gid) in batch_groups else "❌"
-        kb.append([InlineKeyboardButton(f"{status} {c_type} {title}", callback_data=f"btog_{bname}_{gid}={page}")])
+        
+        if assigned_to and status == "❌":
+            btn_text = f"{status} {c_type} {title} (In: {assigned_to[:8]})"
+        else:
+            btn_text = f"{status} {c_type} {title}"
+            
+        kb.append([InlineKeyboardButton(btn_text, callback_data=f"btog_{bname}_{gid}={page}")])
     
     nav = []
     if page > 0: nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"bat_edit_{bname}={page-1}"))
@@ -985,7 +1014,6 @@ async def delete_sent_message_job(context: ContextTypes.DEFAULT_TYPE):
         data = load_data()
         if str(chat_id) in data.get("history", {}):
             history_list = data["history"][str(chat_id)]
-            # Fix if list of lists (due to separation of media/text ids)
             for item in history_list:
                 if isinstance(item, list) and msg_id in item:
                     item.remove(msg_id)
@@ -993,7 +1021,7 @@ async def delete_sent_message_job(context: ContextTypes.DEFAULT_TYPE):
                     history_list.remove(msg_id)
             save_data(data)
     except Exception: pass
-        # ==============================================================================
+# ==============================================================================
 # 11. CORE BROADCAST EXECUTION ENGINE (UPGRADED FOR SEPARATED MEDIA/TEXT)
 # ==============================================================================
 
@@ -1034,7 +1062,7 @@ async def execute_send(
             except Exception as e:
                 logger.error(f"Media send error in {chat_id_str}: {e}")
         
-        # 2. Send Text Second (With buttons & Premium Emojis)
+        # 2. Send Text Second (With buttons & Premium Emojis via copy_message)
         if text_message_id:
             try:
                 sent_text = await bot_instance.copy_message(
@@ -1545,6 +1573,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user: return
     await remember_user(update)
+    
+    # ISSUE #3 FIXED: Global Logger Alert when bot is started
+    u_name = user.first_name if user else "Unknown"
+    u_id = user.id if user else "Unknown"
+    if not is_owner(user.id):
+        await send_to_logger(f"🚀 <b>Main Bot Started</b>\n<b>User:</b> {u_name} (<code>{u_id}</code>)")
+    
     if is_owner(user.id):
         await update.message.reply_text("Admin Menu 👑", reply_markup=admin_keyboard())
         return
@@ -2048,7 +2083,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 bot_id = assigned_bot_token.split(':')[0]
                 subbot_setup_sessions[assigned_bot_token] = {"bname": bname, "step": "MEDIA"}
                 async with TelegramBot(token=assigned_bot_token) as sub_bot_client: me = await sub_bot_client.get_me()
-                info_text = (f"🤖 <b>Sub-Bot Setup Activated: @{me.username}</b>\n\nइस बैच का मैसेज <b>सीधे सब-बोट के अंदर</b> सेट होगा!\n\n👉 <a href='https://t.me/{me.username}'>यहाँ क्लिक करके @{me.username} पर जाएँ</a>\n👉 अपना Photo/Video/Text भेजें, सब-बोट आपको आगे (Text, Buttons) के लिए खुद गाइड करेगा।\n\n<i>(यहाँ मेन बोट में कुछ ഒന്നും भेजना है)</i>")
+                info_text = (f"🤖 <b>Sub-Bot Setup Activated: @{me.username}</b>\n\nइस बैच का मैसेज <b>सीधे सब-बोट के अंदर</b> सेट होगा!\n\n👉 <a href='https://t.me/{me.username}'>यहाँ क्लिक करके @{me.username} पर जाएँ</a>\n👉 अपना Photo/Video/Text भेजें, सब-बोट आपको आगे (Text, Buttons) के लिए खुद गाइड करेगा।\n\n<i>(यहाँ मेन बोट में कुछ भी नहीं भेजना है)</i>")
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Batch", callback_data=f"bat_menu_{bname}")]])
                 await query.edit_message_text(info_text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
                 return ConversationHandler.END
@@ -2934,10 +2969,7 @@ async def receive_change_start_message(update: Update, context: ContextTypes.DEF
     data = load_data()
     msg = update.effective_message
     
-    # Check if there is media to separate for start message as well (Basic logic fallback)
     if msg.photo or msg.video or msg.document or msg.animation:
-        # If user sends photo+caption in single step for start message
-        # we separate it silently for consistency
         media_sent, text_sent = await merge_media_text_and_save(context, msg.chat_id, msg, msg)
         data["start_source_chat_id"] = msg.chat_id
         data["start_message_id"] = text_sent.message_id if text_sent else None
@@ -3186,4 +3218,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
