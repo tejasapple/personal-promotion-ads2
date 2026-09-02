@@ -1,7 +1,8 @@
 # ==============================================================================
 # ADVANCED MULTI-BOT TELEGRAM BROADCASTER & USERBOT MANAGER
 # ==============================================================================
-# UPGRADED VERSION: Includes Batch Dashboards, Switch Off/On, Auto-Ban Notifications, Add Admin
+# UPGRADED VERSION: Includes Media/Text Separation for Premium Emojis, 
+# Batch Dashboards, Switch Off/On, Auto-Ban Notifications, Add Admin
 # ==============================================================================
 
 import json
@@ -116,9 +117,11 @@ DEFAULT_DATA = {
     "auto_reply": True,
     "total_broadcasts_sent": 0, 
     "ad_source_chat_id": None,
+    "ad_media_message_id": None, # ADDED FOR MEDIA SEPARATION
     "ad_message_id": None,
     "buttons": [],
     "start_source_chat_id": None,
+    "start_media_message_id": None, # ADDED FOR MEDIA SEPARATION
     "start_message_id": None,
     "start_buttons": [],
     "users": {},
@@ -137,7 +140,6 @@ DEFAULT_DATA = {
     "userbot_batches": ["Used", "Unused", "Fresh", "Admin", "Unauthorized"], 
     "userbots": {}  
 }
-
 
 # ==============================================================================
 # 3. DATABASE (MONGODB / JSON) CONNECTION & HELPERS
@@ -189,7 +191,6 @@ def load_data() -> Dict[str, Any]:
     for key, value in DEFAULT_DATA.items():
         data.setdefault(key, value)
         
-    # FORCED CATEGORY UPDATE (To ensure 5 categories always exist)
     required_batches = ["Used", "Unused", "Fresh", "Admin", "Unauthorized"]
     if "userbot_batches" in data:
         for rb in required_batches:
@@ -201,11 +202,12 @@ def load_data() -> Dict[str, Any]:
     for bname, bdata in list(data["batches"].items()):
         if isinstance(bdata, list):
             data["batches"][bname] = {
-                "groups": bdata, "msg_chat_id": None, "msg_id": None, "buttons": [],
+                "groups": bdata, "msg_chat_id": None, "msg_id": None, "media_msg_id": None, "buttons": [],
                 "settings": {"auto_broadcast": False, "auto_delete": True, "delete_last": True, "auto_pin": False, "delay": 30, "delete_timer": 0, "link_to_global": False},
                 "stats": {"sent": 0, "failed": 0}, "assigned_bot": None
             }
         else:
+            bdata.setdefault("media_msg_id", None)
             bdata.setdefault("settings", {"auto_broadcast": False, "auto_delete": True, "delete_last": True, "auto_pin": False, "delay": 30, "delete_timer": 0, "link_to_global": False})
             bdata["settings"].setdefault("delete_last", True)
             bdata["settings"].setdefault("link_to_global", False)
@@ -232,10 +234,10 @@ def is_owner(user_id: Optional[int]) -> bool:
     return user_id == OWNER_ID
 
 def has_ad_config(data: Dict[str, Any]) -> bool:
-    return bool(data.get("ad_source_chat_id") and data.get("ad_message_id"))
+    return bool(data.get("ad_source_chat_id") and (data.get("ad_message_id") or data.get("ad_media_message_id")))
 
 def has_start_message(data: Dict[str, Any]) -> bool:
-    return bool(data.get("start_source_chat_id") and data.get("start_message_id"))
+    return bool(data.get("start_source_chat_id") and (data.get("start_message_id") or data.get("start_media_message_id")))
 
 def get_today_date_str() -> str:
     return datetime.now().strftime("%Y-%m-%d")
@@ -295,14 +297,22 @@ async def start_userbot_listener(ub_id: str, session_str: str, alias: str) -> No
         userbot_clients[ub_id] = client
         logger.info(f"Userbot Listener active for alias: {alias}")
     
-    except AuthKeyUnregistered:
-        logger.warning(f"AuthKeyUnregistered for {alias}. Marking as dead.")
+    except (AuthKeyUnregistered, Exception) as e:
         data = load_data()
+        status_msg = f"error ({str(e)[:15]})"
+        
+        if "Data is encrypted" in str(e) or "sqlite3.DatabaseError" in str(e):
+            logger.error(f"Corrupted Session (Data is encrypted) for {alias}: {e}")
+            status_msg = "dead (Corrupt Session)"
+        elif isinstance(e, AuthKeyUnregistered):
+            logger.warning(f"AuthKeyUnregistered for {alias}. Marking as dead.")
+            status_msg = "dead (AuthKeyUnregistered)"
+        else:
+            logger.error(f"Failed to start Userbot Listener for {alias}: {e}")
+
         if ub_id in data.get("userbots", {}):
-            data["userbots"][ub_id]["status"] = "dead (AuthKeyUnregistered)"
+            data["userbots"][ub_id]["status"] = status_msg
             save_data(data)
-    except Exception as e:
-        logger.error(f"Failed to start Userbot Listener for {alias}: {e}")
 
 async def stop_userbot_listener(ub_id: str) -> None:
     if ub_id in userbot_clients:
@@ -313,7 +323,6 @@ async def stop_userbot_listener(ub_id: str) -> None:
             logger.error(f"Error stopping userbot listener: {e}")
 
 async def auto_refresh_userbots_job(context: ContextTypes.DEFAULT_TYPE):
-    """Checks all active userbots every 9 hours. If dead/banned, notifies owner via Logger."""
     data = load_data()
     changed = False
     for ub_id, info in data.get("userbots", {}).items():
@@ -323,8 +332,12 @@ async def auto_refresh_userbots_job(context: ContextTypes.DEFAULT_TYPE):
                 await client.connect()
                 await client.get_me()
                 await client.disconnect()
-            except (UserDeactivated, UserDeactivatedBan, AuthKeyUnregistered) as e:
-                info["status"] = f"dead ({str(e)[:15]})"
+            except Exception as e:
+                status_msg = f"dead ({str(e)[:15]})"
+                if "Data is encrypted" in str(e) or "sqlite3" in str(e):
+                    status_msg = "dead (Corrupt Session)"
+                    
+                info["status"] = status_msg
                 changed = True
                 await stop_userbot_listener(ub_id)
                 await send_to_logger(
@@ -335,9 +348,6 @@ async def auto_refresh_userbots_job(context: ContextTypes.DEFAULT_TYPE):
                     f"<b>Error:</b> {e}\n\n"
                     f"<i>This account has been auto-marked as dead.</i>"
                 )
-            except Exception as e:
-                logger.error(f"Auto-refresh temp error for {info.get('alias')}: {e}")
-                
     if changed:
         save_data(data)
 
@@ -370,29 +380,38 @@ async def start_subbot_listener(token: str, name: str) -> None:
                 session["step"] = "TEXT"
                 await message.reply_text("✅ <b>Media/Photo Received!</b>\n\nNow send the <b>Text Message / Caption</b>.\n<i>(Type /skip to omit caption)</i>", parse_mode=enums.ParseMode.HTML)
 
-                        elif step == "TEXT":
+            elif step == "TEXT":
                 media_msg = session["media_msg"]
+                media_sent_id = None
+                text_sent_id = None
+                msg_chat_id = message.chat.id
+                
                 try:
-                    if message.text and message.text.lower() == '/skip':
-                        sent = await media_msg.copy(message.chat.id)
-                        session["final_msg_id"] = sent.id
+                    # Send Media Separately First
+                    if media_msg:
+                        if media_msg.photo: ms = await c.send_photo(msg_chat_id, media_msg.photo[-1].file_id)
+                        elif media_msg.video: ms = await c.send_video(msg_chat_id, media_msg.video.file_id)
+                        elif media_msg.document: ms = await c.send_document(msg_chat_id, media_msg.document.file_id)
+                        elif media_msg.animation: ms = await c.send_animation(msg_chat_id, media_msg.animation.file_id)
+                        else: ms = await media_msg.copy(msg_chat_id)
+                        media_sent_id = ms.id
+
+                    # Send Text Separately
+                    if message.text and message.text.lower() != '/skip':
+                        sent = await c.send_message(msg_chat_id, text=message.text, entities=message.entities)
+                        text_sent_id = sent.id
                     else:
-                        # Media को अलग से सेव करो
-                        if media_msg and (media_msg.photo or media_msg.video or media_msg.document or media_msg.animation):
-                            m_sent = await media_msg.copy(message.chat.id)
-                            session["media_msg_id"] = m_sent.id
-                        
-                        # Text को अलग से सेव करो ताकि Premium Emojis काम करें
-                        sent = await message.copy(message.chat.id)
-                        session["final_msg_id"] = sent.id
+                        sent = await message.reply_text("✅ Media saved. Buttons will be sent below this text message.", parse_mode=enums.ParseMode.HTML)
+                        text_sent_id = sent.id
 
-                    session["msg_chat_id"] = sent.chat.id
+                    session["final_msg_id"] = text_sent_id
+                    session["media_msg_id"] = media_sent_id
+                    session["msg_chat_id"] = msg_chat_id
                     session["step"] = "BTN_COUNT"
-                    await message.reply_text("✅ <b>Text Received!</b>\n\nHow many inline buttons? (0-20)", parse_mode=enums.ParseMode.HTML)
+                    await message.reply_text("✅ <b>Text/Media Separated Successfully!</b>\n\nHow many inline buttons? (0-20)", parse_mode=enums.ParseMode.HTML)
                 except Exception as e:
-                    await message.reply_text(f"❌ Error processing message: {e}\nPlease send Media again.")
+                    await message.reply_text(f"❌ Error setting up message: {e}\nPlease send Media again.")
                     session["step"] = "MEDIA"
-
 
             elif step == "BTN_COUNT":
                 try: count = int(message.text.strip())
@@ -429,6 +448,7 @@ async def start_subbot_listener(token: str, name: str) -> None:
                 if bname in data["batches"]:
                     data["batches"][bname]["msg_chat_id"] = session["msg_chat_id"]
                     data["batches"][bname]["msg_id"] = session["final_msg_id"]
+                    data["batches"][bname]["media_msg_id"] = session["media_msg_id"]
                     data["batches"][bname]["buttons"] = session["btns"]
                     data["batches"][bname]["settings"]["delete_timer"] = max(0, timer)
                     save_data(data)
@@ -491,22 +511,34 @@ async def stop_subbot_listener(token: str) -> None:
 # ==============================================================================
 
 async def merge_media_text_and_save(context: ContextTypes.DEFAULT_TYPE, chat_id: int, media_msg, text_msg):
-    if not media_msg: return text_msg
-    kwargs = {}
+    """
+    UPGRADED: NO LONGER MERGES. 
+    Sends media separately, then text separately to support Premium Animated Emojis in text.
+    Returns: (media_sent_msg_obj, text_sent_msg_obj)
+    """
+    media_sent = None
+    text_sent = None
+
+    if media_msg:
+        try:
+            if media_msg.photo: media_sent = await context.bot.send_photo(chat_id=chat_id, photo=media_msg.photo[-1].file_id)
+            elif media_msg.video: media_sent = await context.bot.send_video(chat_id=chat_id, video=media_msg.video.file_id)
+            elif media_msg.document: media_sent = await context.bot.send_document(chat_id=chat_id, document=media_msg.document.file_id)
+            elif media_msg.animation: media_sent = await context.bot.send_animation(chat_id=chat_id, animation=media_msg.animation.file_id)
+            else: media_sent = await media_msg.copy(chat_id)
+        except Exception as e:
+            logger.error(f"Media separate send error: {e}")
+
     if text_msg and text_msg.text and text_msg.text.lower() != '/skip':
-        kwargs['caption'] = text_msg.text
-        kwargs['caption_entities'] = text_msg.entities
-    try:
-        if media_msg.photo: return await context.bot.send_photo(chat_id=chat_id, photo=media_msg.photo[-1].file_id, **kwargs)
-        elif media_msg.video: return await context.bot.send_video(chat_id=chat_id, video=media_msg.video.file_id, **kwargs)
-        elif media_msg.document: return await context.bot.send_document(chat_id=chat_id, document=media_msg.document.file_id, **kwargs)
-        elif media_msg.animation: return await context.bot.send_animation(chat_id=chat_id, animation=media_msg.animation.file_id, **kwargs)
-        else: return media_msg
-    except Exception as e:
-        logger.error(f"Media merge error: {e}")
-        return media_msg
+        try:
+            text_sent = await context.bot.send_message(chat_id=chat_id, text=text_msg.text, entities=text_msg.entities)
+        except Exception as e:
+            logger.error(f"Text separate send error: {e}")
+            text_sent = text_msg
+    else:
+        text_sent = text_msg
 
-
+    return media_sent, text_sent
 
 def safe_url(url: str) -> str:
     if not url: return "https://t.me/"
@@ -605,7 +637,6 @@ def userbots_keyboard() -> InlineKeyboardMarkup:
     batches = data.get("userbot_batches", ["Used", "Unused", "Fresh", "Admin", "Unauthorized"])
     kb = []
     
-    # Show batches only
     for b in batches:
         kb.append([InlineKeyboardButton(f"📁 {b} Accounts", callback_data=f"ub_bview_{b}")])
         
@@ -693,7 +724,7 @@ def build_single_batch_keyboard(bname: str) -> InlineKeyboardMarkup:
     data = load_data()
     bdata = data.get("batches", {}).get(bname, {})
     s = bdata.get("settings", {})
-    is_msg_set = "🟢 Configured" if bdata.get("msg_id") else "🔴 Not Configured"
+    is_msg_set = "🟢 Configured" if bdata.get("msg_id") or bdata.get("media_msg_id") else "🔴 Not Configured"
     bcast_txt = "🟢 Auto Broadcast: ON" if s.get("auto_broadcast") else "🔴 Auto Broadcast: OFF"
     del_txt = f"🟢 Auto-Delete: {s.get('delete_timer', 0)}s" if s.get("auto_delete") else "🔴 Auto-Delete: OFF"
     del_last_txt = "🟢 Delete Last Msg: ON" if s.get("delete_last", True) else "🔴 Delete Last Msg: OFF"
@@ -850,7 +881,7 @@ def save_chat_data(chat_id: int, title: str, chat_type: str, members_count: int 
     if "batches" not in data: data["batches"] = {}
     if batch_name not in data["batches"]:
         data["batches"][batch_name] = {
-            "groups": [], "msg_chat_id": None, "msg_id": None, "buttons": [], 
+            "groups": [], "msg_chat_id": None, "msg_id": None, "media_msg_id": None, "buttons": [], 
             "settings": {"auto_broadcast": False, "auto_delete": True, "delete_last": True, "auto_pin": False, "delay": 30, "delete_timer": 0, "link_to_global": False}, 
             "stats": {"sent": 0, "failed": 0}, "assigned_bot": None
         }
@@ -941,7 +972,7 @@ def manage_batch_job(context: ContextTypes.DEFAULT_TYPE, bname: str, start: bool
     if start:
         data = load_data()
         bdata = data.get("batches", {}).get(bname)
-        if bdata and bdata.get("msg_id"):
+        if bdata and (bdata.get("msg_id") or bdata.get("media_msg_id")):
             delay = max(1, int(bdata["settings"].get("delay", 30)))
             context.job_queue.run_repeating(batch_cycle_job, interval=delay, first=0, data=bname, name=job_name)
 
@@ -952,17 +983,23 @@ async def delete_sent_message_job(context: ContextTypes.DEFAULT_TYPE):
             await custom_bot.delete_message(chat_id=chat_id, message_id=msg_id)
         
         data = load_data()
-        if str(chat_id) in data.get("history", {}) and msg_id in data["history"][str(chat_id)]:
-            data["history"][str(chat_id)].remove(msg_id)
+        if str(chat_id) in data.get("history", {}):
+            history_list = data["history"][str(chat_id)]
+            # Fix if list of lists (due to separation of media/text ids)
+            for item in history_list:
+                if isinstance(item, list) and msg_id in item:
+                    item.remove(msg_id)
+                elif item == msg_id:
+                    history_list.remove(msg_id)
             save_data(data)
     except Exception: pass
-
-# ==============================================================================
-# 11. CORE BROADCAST EXECUTION ENGINE
+        # ==============================================================================
+# 11. CORE BROADCAST EXECUTION ENGINE (UPGRADED FOR SEPARATED MEDIA/TEXT)
 # ==============================================================================
 
 async def execute_send(
-    bot_instance, chat_id_str: str, from_chat_id: int, message_id: int, 
+    bot_instance, chat_id_str: str, from_chat_id: int, 
+    media_message_id: Optional[int], text_message_id: Optional[int], 
     reply_markup: Optional[InlineKeyboardMarkup], auto_delete: bool = True, 
     delete_last: bool = True, auto_pin: bool = False, delete_timer: int = 0, 
     context: ContextTypes.DEFAULT_TYPE = None, bot_token: str = BOT_TOKEN
@@ -970,19 +1007,56 @@ async def execute_send(
     data = load_data()
     chat_id = int(chat_id_str)
 
-    last_msg_id = data.get("last_sent_msg_id", {}).get(chat_id_str)
-    if delete_last and last_msg_id:
-        try: await bot_instance.delete_message(chat_id=chat_id, message_id=last_msg_id)
-        except Exception: pass 
+    last_msg_ids = data.get("last_sent_msg_id", {}).get(chat_id_str)
+    if delete_last and last_msg_ids:
+        if isinstance(last_msg_ids, list):
+            for m_id in last_msg_ids:
+                try: await bot_instance.delete_message(chat_id=chat_id, message_id=m_id)
+                except Exception: pass
+        else:
+            try: await bot_instance.delete_message(chat_id=chat_id, message_id=last_msg_ids)
+            except Exception: pass 
 
     try:
-        sent_msg = await bot_instance.copy_message(chat_id=chat_id, from_chat_id=from_chat_id, message_id=message_id, reply_markup=reply_markup)
-        if auto_pin:
-            try: await bot_instance.pin_chat_message(chat_id=chat_id, message_id=sent_msg.message_id, disable_notification=True)
+        sent_msg_ids = []
+        final_msg_for_pin = None
+
+        # 1. Send Media First (Separately)
+        if media_message_id:
+            try:
+                sent_media = await bot_instance.copy_message(
+                    chat_id=chat_id, 
+                    from_chat_id=from_chat_id, 
+                    message_id=media_message_id
+                )
+                sent_msg_ids.append(sent_media.message_id)
+                final_msg_for_pin = sent_media
+            except Exception as e:
+                logger.error(f"Media send error in {chat_id_str}: {e}")
+        
+        # 2. Send Text Second (With buttons & Premium Emojis)
+        if text_message_id:
+            try:
+                sent_text = await bot_instance.copy_message(
+                    chat_id=chat_id, 
+                    from_chat_id=from_chat_id, 
+                    message_id=text_message_id, 
+                    reply_markup=reply_markup
+                )
+                sent_msg_ids.append(sent_text.message_id)
+                final_msg_for_pin = sent_text
+            except Exception as e:
+                logger.error(f"Text send error in {chat_id_str}: {e}")
+
+        if not sent_msg_ids:
+            return False
+
+        if auto_pin and final_msg_for_pin:
+            try: await bot_instance.pin_chat_message(chat_id=chat_id, message_id=final_msg_for_pin.message_id, disable_notification=True)
             except Exception: pass
 
-        data.setdefault("last_sent_msg_id", {})[chat_id_str] = sent_msg.message_id
-        data.setdefault("history", {}).setdefault(chat_id_str, []).append(sent_msg.message_id)
+        data.setdefault("last_sent_msg_id", {})[chat_id_str] = sent_msg_ids
+        data.setdefault("history", {}).setdefault(chat_id_str, []).append(sent_msg_ids)
         data["history"][chat_id_str] = data["history"][chat_id_str][-50:] 
         
         data["last_sent"][chat_id_str] = int(time.time())
@@ -991,7 +1065,8 @@ async def execute_send(
         save_data(data)
         
         if auto_delete and delete_timer > 0 and context and context.job_queue:
-            context.job_queue.run_once(delete_sent_message_job, delete_timer, data=(bot_token, chat_id, sent_msg.message_id))
+            for s_id in sent_msg_ids:
+                context.job_queue.run_once(delete_sent_message_job, delete_timer, data=(bot_token, chat_id, s_id))
             
         await asyncio.sleep(0.05)
         return True
@@ -1015,7 +1090,8 @@ async def broadcast_ads(context: ContextTypes.DEFAULT_TYPE) -> tuple[int, int]:
             in_batch = any(chat_id_str in bdata.get("groups", []) for bdata in data.get("batches", {}).values())
             if not in_batch:
                 is_sent = await execute_send(
-                    context.bot, chat_id_str, data["ad_source_chat_id"], data["ad_message_id"], 
+                    context.bot, chat_id_str, data["ad_source_chat_id"], 
+                    data.get("ad_media_message_id"), data.get("ad_message_id"), 
                     rm, auto_delete=True, delete_last=True, auto_pin=False, delete_timer=timer, 
                     context=context, bot_token=BOT_TOKEN
                 )
@@ -1033,7 +1109,7 @@ async def broadcast_ads(context: ContextTypes.DEFAULT_TYPE) -> tuple[int, int]:
 async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tuple[int, int]:
     data = load_data()
     bdata = data.get("batches", {}).get(bname)
-    if not bdata or not bdata.get("msg_id"): return 0, 0
+    if not bdata or not (bdata.get("msg_id") or bdata.get("media_msg_id")): return 0, 0
         
     assigned_bot = bdata.get("assigned_bot")
     
@@ -1049,7 +1125,8 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
         for chat_id_str in bdata.get("groups", []):
             if chat_id_str in data.get("groups", {}):
                 is_sent = await execute_send(
-                    bot_instance, chat_id_str, bdata["msg_chat_id"], bdata["msg_id"], rm, 
+                    bot_instance, chat_id_str, bdata["msg_chat_id"], 
+                    bdata.get("media_msg_id"), bdata.get("msg_id"), rm, 
                     auto_delete=auto_del, delete_last=del_last, auto_pin=auto_pin, 
                     delete_timer=timer, context=context, bot_token=token_used
                 )
@@ -1093,83 +1170,57 @@ async def batch_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ==============================================================================
-# 12. USERBOTS - SPECIFIC OPERATIONS (SpamBot, Admin Check, Terminate, Fetch OTP)
+# 12. USERBOTS - SPECIFIC OPERATIONS
 # ==============================================================================
 
 async def safe_get_admin_chats(client: Client) -> list:
-    """
-    UPGRADED: First uses Raw API to guarantee we find all Admin/Owner roles accurately,
-    then iterates using Pyrogram safely to fill in member counts.
-    """
     admin_chats_dict = {}
-
-    # 1. Fast, highly accurate Raw API check to find Admin/Owner roles
     try:
         offset_date = 0
         offset_id = 0
         offset_peer = raw.types.InputPeerEmpty()
         limit = 100
-
         while True:
             r = await client.invoke(
                 raw.functions.messages.GetDialogs(
-                    offset_date=offset_date,
-                    offset_id=offset_id,
-                    offset_peer=offset_peer,
-                    limit=limit,
-                    hash=0
+                    offset_date=offset_date, offset_id=offset_id, offset_peer=offset_peer, limit=limit, hash=0
                 )
             )
-
             for c in r.chats:
                 if isinstance(c, (raw.types.Chat, raw.types.Channel)):
                     is_owner = getattr(c, 'creator', False)
                     has_admin = getattr(c, 'admin_rights', None) is not None
-
                     if is_owner or has_admin:
                         cid = c.id
                         real_id = int(f"-100{cid}") if isinstance(c, raw.types.Channel) else int(f"-{cid}")
                         role = "OWNER" if is_owner else "ADMINISTRATOR"
                         admin_chats_dict[real_id] = {
-                            "id": real_id,
-                            "title": getattr(c, 'title', 'Unknown'),
-                            "members": getattr(c, 'participants_count', 0) or 0,
-                            "role": role
+                            "id": real_id, "title": getattr(c, 'title', 'Unknown'),
+                            "members": getattr(c, 'participants_count', 0) or 0, "role": role
                         }
-
-            if not r.dialogs or len(r.dialogs) < limit:
-                break
-
+            if not r.dialogs or len(r.dialogs) < limit: break
             if r.messages:
                 last_msg = r.messages[-1]
                 offset_id = last_msg.id
                 offset_date = last_msg.date
                 offset_peer = raw.types.InputPeerEmpty()
-            else:
-                break
+            else: break
     except Exception as raw_e:
         logger.error(f"Raw GetDialogs failed: {raw_e}")
 
-    # 2. Pyrogram High-Level iteration for robust member counting
     try:
         async for dialog in client.get_dialogs():
             chat = dialog.chat
             if not chat or chat.type not in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL]: 
                 continue
-
-            # Determine Role safely
             role = None
-            if getattr(chat, 'is_creator', False):
-                role = "OWNER"
-            elif getattr(chat, 'privileges', None) is not None:
-                role = "ADMINISTRATOR"
-            elif chat.id in admin_chats_dict:
-                role = admin_chats_dict[chat.id]["role"] # Retrieve role from Raw API if Pyrogram missed it
+            if getattr(chat, 'is_creator', False): role = "OWNER"
+            elif getattr(chat, 'privileges', None) is not None: role = "ADMINISTRATOR"
+            elif chat.id in admin_chats_dict: role = admin_chats_dict[chat.id]["role"] 
 
             if role:
                 admin_chats_dict[chat.id] = {
-                    "id": chat.id,
-                    "title": chat.title or "Unknown Group",
+                    "id": chat.id, "title": chat.title or "Unknown Group",
                     "members": getattr(chat, 'members_count', getattr(chat, 'participants_count', 0)) or admin_chats_dict.get(chat.id, {}).get("members", 0),
                     "role": role
                 }
@@ -1197,11 +1248,7 @@ async def run_fetch_latest_otp(update: Update, context: ContextTypes.DEFAULT_TYP
             text = f"🔑 <b>Latest OTPs/Messages for {alias}:</b>\n\n"
             for i, m in enumerate(messages, 1):
                 text += f"<b>{i}.</b> <code>{m[:300]}</code>\n\n"
-            
-            # Send to logger
             await send_to_logger(f"🚨 <b>MANUAL OTP FETCH</b>\n{text}")
-            
-            # Show on UI as well
             ui_text = f"✅ <b>OTP Fetched and Sent to Logger Bot!</b>\n\n{text}"
         else:
             ui_text = f"❌ No recent Telegram OTP messages found for {alias}."
@@ -1209,7 +1256,6 @@ async def run_fetch_latest_otp(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.callback_query.message.edit_text(ui_text, parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
     except Exception as e:
         await update.callback_query.message.edit_text(f"❌ Error fetching OTP: {e}", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
-
 
 async def run_get_all_dms(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
@@ -1322,7 +1368,6 @@ async def run_check_owner_admin(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         client = Client(name=ub_id, session_string=session_str, api_id=API_ID, api_hash=API_HASH, in_memory=True)
         await client.connect()
-        
         admin_chats = await safe_get_admin_chats(client)
         
         owner_groups = []
@@ -1451,19 +1496,11 @@ async def run_userbot_add_admin(update: Update, context: ContextTypes.DEFAULT_TY
         admin_chats = await safe_get_admin_chats(client)
         sent, failed = 0, 0
 
-        # ==== 🚨 [FIXED] ADDED FULL CHANNEL & GROUP RIGHTS HERE 🚨 ====
         privs = ChatPrivileges(
-            can_manage_chat=True,
-            can_delete_messages=True,
-            can_manage_video_chats=True,
-            can_restrict_members=True,
-            can_promote_members=True,
-            can_change_info=True,
-            can_invite_users=True,
-            can_pin_messages=True,
-            can_post_messages=True,    
-            can_edit_messages=True,    
-            is_anonymous=True          
+            can_manage_chat=True, can_delete_messages=True, can_manage_video_chats=True,
+            can_restrict_members=True, can_promote_members=True, can_change_info=True,
+            can_invite_users=True, can_pin_messages=True, can_post_messages=True,    
+            can_edit_messages=True, is_anonymous=True          
         )
 
         for g in admin_chats:
@@ -1473,26 +1510,20 @@ async def run_userbot_add_admin(update: Update, context: ContextTypes.DEFAULT_TY
             for username in usernames:
                 await asyncio.sleep(random.uniform(3, 7))
                 try:
-                    # 1. Resolve target user safely
                     target_user = await client.get_users(username)
-                    
-                    # 2. Force Pyrogram to update its internal entity cache for this specific chat
                     try:
                         chat_obj = await client.get_chat(chat_id)
                         actual_chat_id = chat_obj.id
                     except Exception:
                         actual_chat_id = chat_id
                         
-                    # 3. Try to add them to the chat first (may silently fail for bots in channels, which is fine)
                     try:
                         await client.add_chat_members(actual_chat_id, target_user.id)
                         await asyncio.sleep(1)
                     except Exception:
                         pass 
 
-                    # 4. Promote to Admin (Now with 100% Full Rights)
                     await client.promote_chat_member(actual_chat_id, target_user.id, privileges=privs)
-                    
                     sent += 1
                     await send_to_logger(f"✅ <b>Admin Added Successfully</b>\n<b>Account:</b> {alias}\n<b>Group/Channel:</b> {chat_title}\n<b>User:</b> {username}\n<b>Status:</b> Full Rights + Anonymous On")
                 except Exception as e:
@@ -1522,8 +1553,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not has_start_message(data): 
         await update.message.reply_text("Hello User! Welcome to the bot.")
     else:
-        try: 
-            await context.bot.copy_message(chat_id=user.id, from_chat_id=data["start_source_chat_id"], message_id=data["start_message_id"], reply_markup=build_start_buttons())
+        try:
+            # Send separated media and text for Start Message
+            if data.get("start_media_message_id"):
+                await context.bot.copy_message(chat_id=user.id, from_chat_id=data["start_source_chat_id"], message_id=data["start_media_message_id"])
+            if data.get("start_message_id"):
+                await context.bot.copy_message(chat_id=user.id, from_chat_id=data["start_source_chat_id"], message_id=data["start_message_id"], reply_markup=build_start_buttons())
         except Exception as e:
             logger.error(f"Failed to send start message: {e}")
             await update.message.reply_text("Hello!")
@@ -1560,7 +1595,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Admin Menu 👑", reply_markup=admin_keyboard())
         return ConversationHandler.END
 
-    # ------------------ USERBOTS SECTION ------------------
     if cd == "userbots_menu":
         txt = "📱 <b>Manage Ads Accounts (Userbots Dashboard)</b>\n\nChoose a batch to view your accounts, or manage global settings."
         await query.edit_message_text(txt, parse_mode="HTML", reply_markup=userbots_keyboard())
@@ -1622,7 +1656,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cd in ["ub_add_phone", "ub_add_string", "ub_add_bulk", "ub_add_file"]:
         context.user_data['pending_add_method'] = cd
         batch = context.user_data.get('pending_add_batch', 'Unused')
-        
         if cd == "ub_add_phone":
             await query.edit_message_text(f"Batch: {batch} 📁\n\n📱 Send the Phone Number in international format (e.g., +91...):", reply_markup=cancel_keyboard())
             return UB_ADD_PHONE
@@ -1638,12 +1671,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if cd.startswith("ub_view_"):
         ub_id = cd[8:]
-        if ub_id not in data['userbots']: 
-            return ConversationHandler.END
-            
+        if ub_id not in data['userbots']: return ConversationHandler.END
         ub_info = data['userbots'][ub_id]
-        
-        # Auto-fetch phone dynamically if missing and account is active
         if "phone" not in ub_info and ub_info.get("status") == "active" and not ub_info.get("is_offline"):
             try:
                 client = Client(name=ub_id, session_string=ub_info["session"], api_id=API_ID, api_hash=API_HASH, in_memory=True)
@@ -1654,13 +1683,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 save_data(data)
             except Exception:
                 ub_info["phone"] = "Error fetching"
-                
         phone_str = ub_info.get("phone", "Unknown")
-        
         batch = ub_info.get('batch', 'Unused')
         status = "🔴 Dead" if ub_info['status'] != "active" else ("💤 Offline" if ub_info.get('is_offline') else "🟢 Active")
         bc = "📡" if ub_info.get('is_broadcasting') else ""
-        txt = f"📱 <b>Account Dashboard:</b> {ub_info['alias']}\n\n📞 <b>Number:</b> <code>+{phone_str}</code>\n📁 <b>Batch:</b> {batch}\nСтатус Status: {status} {bc}\n🤖 Spambot: {ub_info['spambot']}"
+        txt = f"📱 <b>Account Dashboard:</b> {ub_info['alias']}\n\n📞 <b>Number:</b> <code>+{phone_str}</code>\n📁 <b>Batch:</b> {batch}\nStatus: {status} {bc}\n🤖 Spambot: {ub_info['spambot']}"
         await query.edit_message_text(txt, parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
         return ConversationHandler.END
         
@@ -1713,7 +1740,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_reply_markup(reply_markup=userbots_keyboard())
         return ConversationHandler.END
 
-    # --- GET LATEST UNREAD DMs BUTTON LOGIC ---
     if cd == "ub_get_all_dms":
         await query.edit_message_text("⏳ Fetching latest unread DMs from all active accounts...\nThis will check all bots and send messages to Logger. Please wait...", parse_mode="HTML")
         asyncio.create_task(run_get_all_dms(update, context))
@@ -1751,7 +1777,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         asyncio.create_task(terminate_all_accounts_sessions(update, context))
         return ConversationHandler.END
         
-    # --- PURE STRINGS BACKUP (UPGRADED) ---
     if cd == "ub_backup_all":
         batches = {}
         for ub_id, info in data.get("userbots", {}).items():
@@ -1776,7 +1801,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     current_chunk = ""
                     for s in sessions:
-                        # 4000 limit protection
                         if len(current_chunk) + len(s) + 2 > 4000:
                             await log_bot.send_message(chat_id=LOGGER_CHAT_ID, text=current_chunk.strip())
                             current_chunk = s + "\n\n"
@@ -1791,7 +1815,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Failed to send backup to logger: {e}")
             await query.message.reply_text(f"❌ Backup Error: {e}")
-            
         return ConversationHandler.END
     
     if cd.startswith("ub_otp_"):
@@ -1827,7 +1850,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_reply_markup(reply_markup=userbot_single_keyboard(ub_id))
         return ConversationHandler.END
 
-    # --- BATCH MANAGEMENT CALLBACKS FOR ACCOUNTS ---
     if cd.startswith("ub_chbatch_"):
         ub_id = cd[11:]
         await query.edit_message_text("📂 <b>Select a Batch for this Account:</b>", parse_mode="HTML", reply_markup=ub_batch_selection_keyboard(ub_id))
@@ -1849,7 +1871,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("✍️ Send a short name for the new Userbot Batch:", parse_mode="HTML", reply_markup=cancel_keyboard())
         return UB_NEW_BATCH_NAME
 
-    # ------------------ SUB-BOTS SECTION ------------------
     if cd == "subbots_menu":
         await query.edit_message_text("🤖 <b>Manage Multi-Bot Architecture</b>\n\nAdd extra bot tokens here to assign them to different batches, avoiding rate limits.", parse_mode="HTML", reply_markup=subbots_keyboard())
         return ConversationHandler.END
@@ -1887,7 +1908,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("🗑️ Sub-bot removed.", parse_mode="HTML", reply_markup=subbots_keyboard())
         return ConversationHandler.END
 
-    # ------------------ MAIN SETTINGS / BATCHES ------------------
     if cd == "old_settings_menu":
         await query.edit_message_text("⚙️ Global Configurations", reply_markup=old_settings_keyboard())
         return ConversationHandler.END
@@ -2047,9 +2067,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raw = cd.replace("bat_applysaved_", "", 1)
         bname, _, slot = raw.rpartition("_")
         ad = data.get("saved_ads", {}).get(slot)
-        if ad and ad.get("chat_id") and bname in data["batches"]:
-            data["batches"][bname]["msg_chat_id"] = ad["chat_id"]
-            data["batches"][bname]["msg_id"] = ad["msg_id"]
+        if ad and bname in data["batches"]:
+            data["batches"][bname]["msg_chat_id"] = ad.get("chat_id")
+            data["batches"][bname]["msg_id"] = ad.get("msg_id")
+            data["batches"][bname]["media_msg_id"] = ad.get("media_msg_id")
             data["batches"][bname]["buttons"] = ad.get("buttons", [])
             save_data(data)
             await query.edit_message_text(f"✅ Saved Ad Slot {slot} applied to Batch '{bname}'!", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
@@ -2344,7 +2365,6 @@ async def handle_ub_add_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
     path = f"{doc.file_name}"
     await file.download_to_drive(path)
     
-    # UPGRADED: AUTO BULK RESTORE FROM .TXT BACKUP FILE
     if doc.file_name.endswith(".txt"):
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -2377,7 +2397,6 @@ async def handle_ub_add_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if os.path.exists(path): os.remove(path)
         return ConversationHandler.END
         
-    # Standard Pyrogram .session file import
     elif doc.file_name.endswith(".session"):
         try:
             client = Client(name=path.replace(".session",""), api_id=API_ID, api_hash=API_HASH)
@@ -2449,7 +2468,7 @@ async def handle_sb_add_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # ==============================================================================
-# 16. BATCH CONFIGURATION STATE HANDLERS
+# 16. BATCH CONFIGURATION STATE HANDLERS (SEPARATED MEDIA LOGIC)
 # ==============================================================================
 
 async def handle_wait_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2468,7 +2487,7 @@ async def handle_wait_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = load_data()
         if bname not in data["batches"]:
             data["batches"][bname] = {
-                "groups": [], "msg_chat_id": None, "msg_id": None, "buttons": [], 
+                "groups": [], "msg_chat_id": None, "msg_id": None, "media_msg_id": None, "buttons": [], 
                 "settings": {"auto_broadcast": False, "auto_delete": True, "delete_last": True, "auto_pin": False, "delay": 30, "delete_timer": 0, "link_to_global": False}, 
                 "stats": {"sent": 0, "failed": 0}, "assigned_bot": None
             }
@@ -2497,11 +2516,18 @@ async def receive_batch_delete_n(update: Update, context: ContextTypes.DEFAULT_T
             history = data.get("history", {}).get(gid, [])
             if not history: continue
             msgs_to_delete = history[-n:]
-            for m_id in msgs_to_delete:
-                try:
-                    await bot_instance.delete_message(chat_id=int(gid), message_id=m_id)
-                    deleted_count += 1
-                except Exception: failed_count += 1
+            for m_id_group in msgs_to_delete:
+                if isinstance(m_id_group, list):
+                    for m_id in m_id_group:
+                        try:
+                            await bot_instance.delete_message(chat_id=int(gid), message_id=m_id)
+                            deleted_count += 1
+                        except Exception: failed_count += 1
+                else:
+                    try:
+                        await bot_instance.delete_message(chat_id=int(gid), message_id=m_id_group)
+                        deleted_count += 1
+                    except Exception: failed_count += 1
             data["history"][gid] = [m for m in history if m not in msgs_to_delete]
         return deleted_count, failed_count
 
@@ -2523,6 +2549,7 @@ async def batch_config_media(update: Update, context: ContextTypes.DEFAULT_TYPE)
         data = load_data()
         data["batches"][bname]["msg_chat_id"] = msg.chat_id
         data["batches"][bname]["msg_id"] = msg.message_id
+        data["batches"][bname]["media_msg_id"] = None
         save_data(data)
         await msg.reply_text("✅ आपका मैसेज सेव हो चुका है!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
         return BATCH_CONFIG_BTN_COUNT
@@ -2534,12 +2561,16 @@ async def batch_config_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text_msg = update.effective_message
     media_msg = context.user_data.get('batch_media_msg')
     bname = context.user_data.get('current_batch_setup')
-    sent = await merge_media_text_and_save(context, text_msg.chat_id, media_msg, text_msg)
+    
+    media_sent, text_sent = await merge_media_text_and_save(context, text_msg.chat_id, media_msg, text_msg)
+    
     data = load_data()
-    data["batches"][bname]["msg_chat_id"] = sent.chat_id
-    data["batches"][bname]["msg_id"] = sent.message_id
+    data["batches"][bname]["msg_chat_id"] = text_sent.chat_id if text_sent else (media_sent.chat_id if media_sent else text_msg.chat_id)
+    data["batches"][bname]["msg_id"] = text_sent.message_id if text_sent else None
+    data["batches"][bname]["media_msg_id"] = media_sent.message_id if media_sent else None
     save_data(data)
-    await text_msg.reply_text("✅ आपका मैसेज सेव हो चुका है!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
+    
+    await text_msg.reply_text("✅ आपका मैसेज (Media & Text अलग-अलग) सेव हो चुका है!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
     return BATCH_CONFIG_BTN_COUNT
 
 async def batch_config_btn_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2632,6 +2663,7 @@ async def saved_ad_receive_media(update: Update, context: ContextTypes.DEFAULT_T
         data = load_data()
         data["saved_ads"][slot]["chat_id"] = msg.chat_id
         data["saved_ads"][slot]["msg_id"] = msg.message_id
+        data["saved_ads"][slot]["media_msg_id"] = None
         save_data(data)
         await msg.reply_text(f"✅ Text Content saved for Slot {slot}!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
         return SAVED_AD_BTN_COUNT
@@ -2643,12 +2675,16 @@ async def saved_ad_receive_text(update: Update, context: ContextTypes.DEFAULT_TY
     text_msg = update.effective_message
     media_msg = context.user_data.get('saved_media_msg')
     slot = context.user_data.get('current_saved_ad_slot')
-    sent = await merge_media_text_and_save(context, text_msg.chat_id, media_msg, text_msg)
+    
+    media_sent, text_sent = await merge_media_text_and_save(context, text_msg.chat_id, media_msg, text_msg)
+    
     data = load_data()
-    data["saved_ads"][slot]["chat_id"] = sent.chat_id
-    data["saved_ads"][slot]["msg_id"] = sent.message_id
+    data["saved_ads"][slot]["chat_id"] = text_sent.chat_id if text_sent else (media_sent.chat_id if media_sent else text_msg.chat_id)
+    data["saved_ads"][slot]["msg_id"] = text_sent.message_id if text_sent else None
+    data["saved_ads"][slot]["media_msg_id"] = media_sent.message_id if media_sent else None
     save_data(data)
-    await text_msg.reply_text(f"✅ Media + Caption saved for Slot {slot}!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
+    
+    await text_msg.reply_text(f"✅ Media & Text saved for Slot {slot}!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
     return SAVED_AD_BTN_COUNT
 
 async def saved_ad_receive_btn_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2708,6 +2744,7 @@ async def config_receive_ad_media(update: Update, context: ContextTypes.DEFAULT_
         data = load_data()
         data["ad_source_chat_id"] = msg.chat_id
         data["ad_message_id"] = msg.message_id
+        data["ad_media_message_id"] = None
         save_data(data)
         await msg.reply_text("✅ आपका मैसेज सेव हो चुका है!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
         return CONFIG_BUTTON_COUNT
@@ -2718,11 +2755,15 @@ async def config_receive_ad_media(update: Update, context: ContextTypes.DEFAULT_
 async def config_receive_ad_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text_msg = update.effective_message
     media_msg = context.user_data.get('ad_media_msg')
-    sent = await merge_media_text_and_save(context, text_msg.chat_id, media_msg, text_msg)
+    
+    media_sent, text_sent = await merge_media_text_and_save(context, text_msg.chat_id, media_msg, text_msg)
+    
     data = load_data()
-    data["ad_source_chat_id"] = sent.chat_id
-    data["ad_message_id"] = sent.message_id
+    data["ad_source_chat_id"] = text_sent.chat_id if text_sent else (media_sent.chat_id if media_sent else text_msg.chat_id)
+    data["ad_message_id"] = text_sent.message_id if text_sent else None
+    data["ad_media_message_id"] = media_sent.message_id if media_sent else None
     save_data(data)
+    
     await text_msg.reply_text("✅ आपका मैसेज सेव हो चुका है!\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
     return CONFIG_BUTTON_COUNT
 
@@ -2819,6 +2860,7 @@ async def receive_change_ad_media(update: Update, context: ContextTypes.DEFAULT_
         data = load_data()
         data["ad_source_chat_id"] = msg.chat_id
         data["ad_message_id"] = msg.message_id
+        data["ad_media_message_id"] = None
         data["configured"] = True
         save_data(data)
         await msg.reply_text("✅ आपका मैसेज सेव हो चुका है!", parse_mode="HTML", reply_markup=admin_keyboard())
@@ -2830,13 +2872,17 @@ async def receive_change_ad_media(update: Update, context: ContextTypes.DEFAULT_
 async def receive_change_ad_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text_msg = update.effective_message
     media_msg = context.user_data.get('ad_media_msg')
-    sent = await merge_media_text_and_save(context, text_msg.chat_id, media_msg, text_msg)
+    
+    media_sent, text_sent = await merge_media_text_and_save(context, text_msg.chat_id, media_msg, text_msg)
+    
     data = load_data()
-    data["ad_source_chat_id"] = sent.chat_id
-    data["ad_message_id"] = sent.message_id
+    data["ad_source_chat_id"] = text_sent.chat_id if text_sent else (media_sent.chat_id if media_sent else text_msg.chat_id)
+    data["ad_message_id"] = text_sent.message_id if text_sent else None
+    data["ad_media_message_id"] = media_sent.message_id if media_sent else None
     data["configured"] = True
     save_data(data)
-    await text_msg.reply_text("✅ आपका मैसेज सेव हो चुका है!", parse_mode="HTML", reply_markup=admin_keyboard())
+    
+    await text_msg.reply_text("✅ आपका मैसेज (अलग-अलग) सेव हो चुका है!", parse_mode="HTML", reply_markup=admin_keyboard())
     return ConversationHandler.END
 
 async def reconfig_receive_button_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2886,10 +2932,23 @@ async def reconfig_receive_button_color(update: Update, context: ContextTypes.DE
 
 async def receive_change_start_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
-    data["start_source_chat_id"] = update.effective_message.chat_id
-    data["start_message_id"] = update.effective_message.message_id
+    msg = update.effective_message
+    
+    # Check if there is media to separate for start message as well (Basic logic fallback)
+    if msg.photo or msg.video or msg.document or msg.animation:
+        # If user sends photo+caption in single step for start message
+        # we separate it silently for consistency
+        media_sent, text_sent = await merge_media_text_and_save(context, msg.chat_id, msg, msg)
+        data["start_source_chat_id"] = msg.chat_id
+        data["start_message_id"] = text_sent.message_id if text_sent else None
+        data["start_media_message_id"] = media_sent.message_id if media_sent else None
+    else:
+        data["start_source_chat_id"] = msg.chat_id
+        data["start_message_id"] = msg.message_id
+        data["start_media_message_id"] = None
+        
     save_data(data)
-    await update.effective_message.reply_text("✅ Start message saved!\nButtons count? (0 for none)", parse_mode="HTML", reply_markup=cancel_keyboard())
+    await msg.reply_text("✅ Start message saved!\nButtons count? (0 for none)", parse_mode="HTML", reply_markup=cancel_keyboard())
     return START_BUTTON_COUNT
 
 async def start_receive_button_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2993,26 +3052,23 @@ async def send_restart_auto_backup(token: str, chat_id: int, count: int, session
 async def post_init(application: Application) -> None:
     data = load_data()
     
-    # [FIX] Added check for application.job_queue to prevent NoneType Error
     if application.job_queue:
         if data.get("started") and data.get("configured") and has_ad_config(data):
             delay = max(1, int(data.get("delay", 30)))
             application.job_queue.run_repeating(ads_cycle_job, interval=delay, first=delay, name=ADS_JOB_NAME)
             
         for bname, bdata in data.get("batches", {}).items():
-            if bdata.get("settings", {}).get("auto_broadcast") and bdata.get("msg_id"):
+            if bdata.get("settings", {}).get("auto_broadcast") and (bdata.get("msg_id") or bdata.get("media_msg_id")):
                 delay = max(1, int(bdata["settings"].get("delay", 30)))
                 application.job_queue.run_repeating(batch_cycle_job, interval=delay, first=delay, data=bname, name=f"batch_job_{bname}")
 
         for token, info in data.get("sub_bots", {}).items():
             application.create_task(start_subbot_listener(token, info["name"]))
 
-        # Schedule Auto-Ban/Dead check every 9 hours
         application.job_queue.run_repeating(auto_refresh_userbots_job, interval=9 * 3600, first=3600)
     else:
         logger.warning("Job queue is missing (APScheduler not installed). Auto-broadcasting is disabled to prevent crashes.")
 
-    # 🚀 VPS AUTO-RESTORE SYSTEM & LOGGER BACKUP EXPORT
     active_userbots = 0
     sessions_txt = ""
     for ub_id, info in data.get("userbots", {}).items():
@@ -3031,7 +3087,6 @@ async def post_init(application: Application) -> None:
         except Exception as e:
             logger.error(f"Failed to prep restart backup: {e}")
 
-# [FIX] Added Graceful Shutdown hook to resolve asyncio pending tasks error
 async def post_stop(application: Application) -> None:
     logger.info("Gracefully shutting down all pyrogram clients...")
     for ub_id, client in list(userbot_clients.items()):
@@ -3049,7 +3104,6 @@ def main():
     if BOT_TOKEN == "PASTE_YOUR_NEW_BOT_TOKEN_HERE":
         raise RuntimeError("Paste your NEW bot token in BOT_TOKEN first.")
 
-    # [FIX] Registered post_stop function for graceful shutdown
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).post_stop(post_stop).build()
 
     conv = ConversationHandler(
@@ -3132,3 +3186,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
