@@ -370,28 +370,29 @@ async def start_subbot_listener(token: str, name: str) -> None:
                 session["step"] = "TEXT"
                 await message.reply_text("✅ <b>Media/Photo Received!</b>\n\nNow send the <b>Text Message / Caption</b>.\n<i>(Type /skip to omit caption)</i>", parse_mode=enums.ParseMode.HTML)
 
-            elif step == "TEXT":
+                        elif step == "TEXT":
                 media_msg = session["media_msg"]
                 try:
-                    if message.text and message.text.lower() != '/skip':
-                        cap_text = message.text
-                        cap_ent = message.entities
-                        if media_msg.photo: sent = await c.send_photo(message.chat.id, media_msg.photo.file_id, caption=cap_text, caption_entities=cap_ent)
-                        elif media_msg.video: sent = await c.send_video(message.chat.id, media_msg.video.file_id, caption=cap_text, caption_entities=cap_ent)
-                        elif media_msg.document: sent = await c.send_document(message.chat.id, media_msg.document.file_id, caption=cap_text, caption_entities=cap_ent)
-                        elif media_msg.animation: sent = await c.send_animation(message.chat.id, media_msg.animation.file_id, caption=cap_text, caption_entities=cap_ent)
-                        else: sent = await c.send_message(message.chat.id, text=cap_text, entities=cap_ent)
-                    else:
+                    if message.text and message.text.lower() == '/skip':
                         sent = await media_msg.copy(message.chat.id)
-
+                        session["final_msg_id"] = sent.id
+                    else:
+                        # Media को अलग से सेव करो
+                        if media_msg and (media_msg.photo or media_msg.video or media_msg.document or media_msg.animation):
+                            m_sent = await media_msg.copy(message.chat.id)
+                            session["media_msg_id"] = m_sent.id
                         
-                    session["final_msg_id"] = sent.id
+                        # Text को अलग से सेव करो ताकि Premium Emojis काम करें
+                        sent = await message.copy(message.chat.id)
+                        session["final_msg_id"] = sent.id
+
                     session["msg_chat_id"] = sent.chat.id
                     session["step"] = "BTN_COUNT"
                     await message.reply_text("✅ <b>Text Received!</b>\n\nHow many inline buttons? (0-20)", parse_mode=enums.ParseMode.HTML)
                 except Exception as e:
-                    await message.reply_text(f"❌ Error merging message: {e}\nPlease send Media again.")
+                    await message.reply_text(f"❌ Error processing message: {e}\nPlease send Media again.")
                     session["step"] = "MEDIA"
+
 
             elif step == "BTN_COUNT":
                 try: count = int(message.text.strip())
