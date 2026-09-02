@@ -2,8 +2,8 @@
 # ADVANCED MULTI-BOT TELEGRAM BROADCASTER & USERBOT MANAGER
 # ==============================================================================
 # UPGRADED VERSION: Dump Channel Architecture for 100% Premium Emoji Support.
-# FIXED: Sub-Bot Direct Ads Broadcast ChatNotFound Errors.
-# FIXED: Inline Buttons natively attached to prevent separation via Pyrogram.
+# FIXED: Sub-Bot Direct Ads Broadcast ChatNotFound Errors (Strict Subbot Enforcement).
+# FIXED: Forward Method applied to guarantee Premium Emojis work natively.
 # ADDED: Poster Maker logic for Dump Channel automation.
 # ==============================================================================
 
@@ -451,7 +451,7 @@ def get_button_style(color: str) -> str:
     return BUTTON_COLOR_STYLES.get((color or "default").strip().lower(), "secondary")
 
 # Note: Keeping original button building logic intact as requested, 
-# although primary broadcast now uses dump channel native buttons.
+# although primary broadcast now uses dump channel native buttons via forward_messages.
 def build_buttons(buttons: list) -> Optional[InlineKeyboardMarkup]:
     if not buttons: return None
     keyboard = []
@@ -918,7 +918,8 @@ async def execute_send(
 ) -> bool:
     """
     Broadcasts message using Pyrogram client to keep Premium Emojis safe.
-    Automatically fetches Native Buttons from Dump Channel instead of manual configuration.
+    Uses NATIVE FORWARD method to natively preserve inline buttons and 
+    premium custom emojis exactly as they are in the dump channel.
     """
     data = load_data()
     chat_id = int(chat_id_str)
@@ -941,49 +942,28 @@ async def execute_send(
         sent_msg_ids = []
         final_msg_for_pin = None
 
-        async def send_msg_with_safe_emojis(msg_id):
-            # 1. Fetch original message from dump channel to see if it has buttons
+        async def forward_msg_with_emojis(msg_id):
             try:
-                orig_msgs = await pyro_client.get_messages(dump_chat_id, message_ids=[msg_id])
-                orig_msg = orig_msgs[0] if orig_msgs else None
-            except:
-                orig_msg = None
-
-            # 2. Copy the message WITHOUT reply_markup to preserve premium emojis perfectly
-            try:
-                m = await pyro_client.copy_message(
+                # 1. We use forward_messages instead of copy_message.
+                # This guarantees that the premium emojis and buttons are sent EXACTLY as is.
+                m = await pyro_client.forward_messages(
                     chat_id=chat_id, 
                     from_chat_id=dump_chat_id, 
-                    message_id=msg_id,
-                    reply_markup=None 
+                    message_ids=msg_id
                 )
                 sent_msg_ids.append(m.id)
+                return m
             except Exception as e:
-                logger.error(f"Copy error in {chat_id_str}: {e}")
+                logger.error(f"Forward error in {chat_id_str}: {e}")
                 return None
-
-            # 3. If there were buttons on Dump Channel, attach them to a small transparent placeholder below
-            if orig_msg and orig_msg.reply_markup:
-                try:
-                    btn_m = await pyro_client.send_message(
-                        chat_id=chat_id,
-                        text="👇",
-                        reply_markup=orig_msg.reply_markup,
-                        disable_notification=True
-                    )
-                    sent_msg_ids.append(btn_m.id)
-                except Exception as e:
-                    logger.error(f"Button attach error in {chat_id_str}: {e}")
-
-            return m
 
         # Send messages sequentially
         if msg_id_1:
-            m1 = await send_msg_with_safe_emojis(msg_id_1)
+            m1 = await forward_msg_with_emojis(msg_id_1)
             if m1: final_msg_for_pin = m1
         
         if msg_id_2:
-            m2 = await send_msg_with_safe_emojis(msg_id_2)
+            m2 = await forward_msg_with_emojis(msg_id_2)
             if m2: final_msg_for_pin = m2
 
         if not sent_msg_ids:
@@ -1073,11 +1053,22 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
                     bdata["stats"]["failed"] = bdata["stats"].get("failed", 0) + 1
         return sent_cnt, failed_cnt
 
-    if assigned_bot and assigned_bot in sub_bot_clients:
-        # Use sub-bot pyrogram client instead of PTB
-        sent, failed = await do_broadcast(sub_bot_clients[assigned_bot], assigned_bot)
+    if assigned_bot:
+        if assigned_bot not in sub_bot_clients:
+            # Safely attempt to resurrect the subbot
+            bot_info = data.get("sub_bots", {}).get(assigned_bot)
+            if bot_info:
+                await start_subbot_listener(assigned_bot, bot_info.get("name", "Unknown"))
+                
+        if assigned_bot in sub_bot_clients:
+            sent, failed = await do_broadcast(sub_bot_clients[assigned_bot], assigned_bot)
+        else:
+            # STRICT FIX: Do not silently fallback to main bot. It MUST fail so user knows subbot is down.
+            logger.error(f"Subbot {assigned_bot[:10]} unavailable. Halting subbot broadcast.")
+            sent, failed = 0, len(bdata.get("groups", []))
+            bdata["stats"]["failed"] = bdata["stats"].get("failed", 0) + failed
     else:
-        # Fallback to main bot pyrogram client
+        # Fallback to main bot only if explicitly set to use default
         sent, failed = await do_broadcast(main_pyro_client, BOT_TOKEN)
         
     save_data(data)
@@ -3088,8 +3079,8 @@ def main():
     app.add_handler(MessageHandler((filters.ChatType.GROUPS | filters.ChatType.CHANNEL) & ~filters.COMMAND, remember_group_from_message))
 
     print("\n[+] Advanced Bot Architecture Initialized Successfully.")
-    print("[+] Dump Channel Copy-Link Routing Protocol Active.")
-    print("[+] Sub-Bot Direct Link Broadcasting & Advanced Userbot Data Extraction Active...")
+    print("[+] Dump Channel Native Forward Routing Protocol Active.")
+    print("[+] Sub-Bot Strict Priority Broadcast System Active...")
     print("[+] Auto-Restore Core Module & Logger Services Validated.\n")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
