@@ -370,7 +370,7 @@ async def start_subbot_listener(token: str, name: str) -> None:
                 session["step"] = "TEXT"
                 await message.reply_text("✅ <b>Media/Photo Received!</b>\n\nNow send the <b>Text Message / Caption</b>.\n<i>(Type /skip to omit caption)</i>", parse_mode=enums.ParseMode.HTML)
 
-                 elif step == "TEXT":
+            elif step == "TEXT":
                 media_msg = session["media_msg"]
                 try:
                     if message.text and message.text.lower() != '/skip':
