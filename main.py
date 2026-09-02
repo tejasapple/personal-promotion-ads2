@@ -489,10 +489,10 @@ async def stop_subbot_listener(token: str) -> None:
 
 async def merge_media_text_and_save(context: ContextTypes.DEFAULT_TYPE, chat_id: int, media_msg, text_msg):
     if not media_msg: return text_msg
-    kwargs = {'parse_mode': "HTML"}
+    kwargs = {}
     if text_msg and text_msg.text and text_msg.text.lower() != '/skip':
-        # यह लाइन प्रीमियम इमोजी, बोल्ड, और हर तरह की HTML फॉर्मेटिंग को सपोर्ट करेगी
-        kwargs['caption'] = text_msg.text_html_urled if hasattr(text_msg, 'text_html_urled') else text_msg.text_html
+        kwargs['caption'] = text_msg.text
+        kwargs['caption_entities'] = text_msg.entities
     try:
         if media_msg.photo: return await context.bot.send_photo(chat_id=chat_id, photo=media_msg.photo[-1].file_id, **kwargs)
         elif media_msg.video: return await context.bot.send_video(chat_id=chat_id, video=media_msg.video.file_id, **kwargs)
@@ -502,6 +502,7 @@ async def merge_media_text_and_save(context: ContextTypes.DEFAULT_TYPE, chat_id:
     except Exception as e:
         logger.error(f"Media merge error: {e}")
         return media_msg
+
 
 
 def safe_url(url: str) -> str:
