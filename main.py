@@ -4,6 +4,7 @@
 # UPGRADED VERSION: Includes Media/Text Separation for Premium Emojis, 
 # Batch Dashboards, Switch Off/On, Auto-Ban Notifications, Add Admin, Logger Alerts
 # FIXED: Sub-Bot Direct Ads Broadcast, 8 Saved Ad Slots with Bot Selection, Media Confirmations.
+# FIXED: Premium Emoji Separation (Photo -> Text -> Buttons) & Subbot Chat Fetching.
 # ==============================================================================
 
 import json
@@ -374,6 +375,7 @@ async def start_subbot_listener(token: str, name: str) -> None:
         @client.on_message(pyro_filters.private)
         async def sb_private_message(c: Client, message: PyroMessage):
             is_owner_user = (message.from_user and message.from_user.id == OWNER_ID)
+            t = c.bot_token
             
             if message.text and message.text.startswith("/start"):
                 user = message.from_user
@@ -383,11 +385,14 @@ async def start_subbot_listener(token: str, name: str) -> None:
                 if not is_owner_user:
                     await message.reply_text("🚀 Bot is started!")
                     return
+                # FIX: Check if in setup session so it doesn't ingest /start as text/media
+                if t in subbot_setup_sessions:
+                    await message.reply_text("👋 Hello Owner! I am ready for setup.\n\nPlease send the Photo/Video (Media) first, or send the Text directly if no media.")
+                    return
                     
             if not is_owner_user:
                 return
 
-            t = c.bot_token
             if t not in subbot_setup_sessions:
                 if message.text and message.text.startswith("/start"):
                     await message.reply_text("👋 Hello Owner! Please assign me to a Batch or Slot in the Main Bot first.")
@@ -399,9 +404,17 @@ async def start_subbot_listener(token: str, name: str) -> None:
             target_id = session.get("target_id", session.get("bname"))
 
             if step == "MEDIA":
-                session["media_msg"] = message
-                session["step"] = "TEXT"
-                await message.reply_text("✅ <b>Photo/Media Saved Successfully!</b> (Confirmation)\n\nNow send the <b>Text Message / Caption</b>.\n<i>(Type /skip to omit caption)</i>", parse_mode=enums.ParseMode.HTML)
+                # FIX: Allow text fallback straight away if no media sent
+                if message.text and not message.text.startswith("/"):
+                    session["media_msg"] = None
+                    session["final_msg_id"] = message.id
+                    session["msg_chat_id"] = message.chat.id
+                    session["step"] = "BTN_COUNT"
+                    await message.reply_text("✅ <b>Text Saved Successfully!</b> (No Media)\n\nHow many inline buttons? (0-20)\n\n<i>Note: Photo, Text, and Buttons will be sent separately to preserve Premium Emojis!</i>", parse_mode=enums.ParseMode.HTML)
+                else:
+                    session["media_msg"] = message
+                    session["step"] = "TEXT"
+                    await message.reply_text("✅ <b>Photo/Media Saved Successfully!</b>\n\nNow send the <b>Text Message / Caption</b>.\n<i>(Type /skip to omit caption)</i>", parse_mode=enums.ParseMode.HTML)
 
             elif step == "TEXT":
                 media_msg = session["media_msg"]
@@ -423,13 +436,13 @@ async def start_subbot_listener(token: str, name: str) -> None:
                         text_sent_id = sent.id
                     else:
                         text_sent_id = None
-                        await message.reply_text("✅ Media saved. Buttons will be attached to media.", parse_mode=enums.ParseMode.HTML)
+                        await message.reply_text("✅ Media saved. Buttons will be sent below the media.", parse_mode=enums.ParseMode.HTML)
 
                     session["final_msg_id"] = text_sent_id
                     session["media_msg_id"] = media_sent_id
                     session["msg_chat_id"] = msg_chat_id
                     session["step"] = "BTN_COUNT"
-                    await message.reply_text("✅ <b>Text/Media Separated & Saved Successfully!</b>\n\nHow many inline buttons? (0-20)", parse_mode=enums.ParseMode.HTML)
+                    await message.reply_text("✅ <b>Text/Media Separated & Saved Successfully!</b>\n\nHow many inline buttons? (0-20)\n\n<i>Note: Buttons will be sent below the text as a separate block to keep Premium Emojis intact!</i>", parse_mode=enums.ParseMode.HTML)
                 except Exception as e:
                     await message.reply_text(f"❌ Error setting up message: {e}\nPlease send Media again.")
                     session["step"] = "MEDIA"
@@ -505,25 +518,31 @@ async def start_subbot_listener(token: str, name: str) -> None:
                 session["step"] = "BTN_NAME"
                 await c.send_message(query.message.chat.id, f"Send button {session['curr_btn']} name.", parse_mode=enums.ParseMode.HTML)
 
-        @client.on_message(pyro_filters.group | pyro_filters.channel)
+        # FIX: Ensure groups are fetched when subbot is added
+        @client.on_message(pyro_filters.group | pyro_filters.channel, group=-1)
         async def sb_on_message(c: Client, message: PyroMessage):
             chat = message.chat
             if not chat: return
             ctype = "channel" if str(chat.type) == "ChatType.CHANNEL" else "group"
             save_chat_data(chat.id, chat.title, ctype)
 
-        @client.on_chat_member_updated()
-        async def sb_on_chat_member(c: Client, update: PyroChatMemberUpdated):
-            chat = update.chat
-            if update.new_chat_member and update.new_chat_member.user and update.new_chat_member.user.is_self:
-                status = update.new_chat_member.status
-                ctype = "channel" if str(chat.type) == "ChatType.CHANNEL" else "group"
-                if status in [enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.ADMINISTRATOR]:
+        @client.on_message(pyro_filters.new_chat_members)
+        async def sb_added_to_chat(c: Client, message: PyroMessage):
+            chat = message.chat
+            me = await c.get_me()
+            for member in message.new_chat_members:
+                if member.id == me.id:
+                    ctype = "channel" if str(chat.type) == "ChatType.CHANNEL" else "group"
                     save_chat_data(chat.id, chat.title, ctype, chat.members_count or 0)
                     await send_to_logger(f"🤖 <b>Sub-Bot ({name}) added to chat!</b>\n\n<b>Title:</b> {chat.title}")
-                elif status in [enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED]:
-                    remove_group_and_log(str(chat.id), chat.title)
-                    await send_to_logger(f"🛑 <b>Sub-Bot ({name}) removed from chat!</b>\n\n<b>Title:</b> {chat.title}")
+
+        @client.on_message(pyro_filters.left_chat_member)
+        async def sb_removed_from_chat(c: Client, message: PyroMessage):
+            me = await c.get_me()
+            if message.left_chat_member.id == me.id:
+                chat = message.chat
+                remove_group_and_log(str(chat.id), chat.title)
+                await send_to_logger(f"🛑 <b>Sub-Bot ({name}) removed from chat!</b>\n\n<b>Title:</b> {chat.title}")
         
         await client.start()
         sub_bot_clients[token] = client
@@ -539,7 +558,7 @@ async def stop_subbot_listener(token: str) -> None:
             logger.error(f"Error stopping Sub-bot: {e}")
 
 # ==============================================================================
-# 7. MEDIA AND BUTTON CONSTRUCTION HELPERS (FIXED PREMIUM EMOJI & ATTRIBUTE ERROR)
+# 7. MEDIA AND BUTTON CONSTRUCTION HELPERS 
 # ==============================================================================
 
 async def merge_media_text_and_save(context: ContextTypes.DEFAULT_TYPE, chat_id: int, media_msg, text_msg):
@@ -1037,7 +1056,9 @@ async def delete_sent_message_job(context: ContextTypes.DEFAULT_TYPE):
                     history_list.remove(msg_id)
             save_data(data)
     except Exception: pass
-        # ==============================================================================
+
+
+# ==============================================================================
 # 11. CORE BROADCAST EXECUTION ENGINE (FIXED EMOTICON & BUTTONS HANDLING)
 # ==============================================================================
 
@@ -1065,35 +1086,45 @@ async def execute_send(
         sent_msg_ids = []
         final_msg_for_pin = None
 
-        # 1. Send Media First (Separately)
+        # 1. Send Media First (Separately without buttons to keep structure clean)
         if media_message_id:
             try:
-                # If there's no text message, attach the buttons directly to the media
-                current_reply_markup = reply_markup if not text_message_id else None
                 sent_media = await bot_instance.copy_message(
                     chat_id=chat_id, 
                     from_chat_id=from_chat_id, 
-                    message_id=media_message_id,
-                    reply_markup=current_reply_markup
+                    message_id=media_message_id
                 )
                 sent_msg_ids.append(sent_media.message_id)
                 final_msg_for_pin = sent_media
             except Exception as e:
                 logger.error(f"Media send error in {chat_id_str}: {e}")
         
-        # 2. Send Text Second (With buttons & Premium Emojis natively copied)
+        # 2. Send Text Second (Natively copied WITHOUT buttons to preserve 100% Premium Emojis)
         if text_message_id:
             try:
                 sent_text = await bot_instance.copy_message(
                     chat_id=chat_id, 
                     from_chat_id=from_chat_id, 
-                    message_id=text_message_id, 
-                    reply_markup=reply_markup
+                    message_id=text_message_id
                 )
                 sent_msg_ids.append(sent_text.message_id)
                 final_msg_for_pin = sent_text
             except Exception as e:
                 logger.error(f"Text send error in {chat_id_str}: {e}")
+
+        # 3. Send Buttons Third (Separately below the text)
+        if reply_markup:
+            try:
+                # We send a tiny indicator text "👇" and attach buttons to it so emojis aren't affected
+                sent_btn = await bot_instance.send_message(
+                    chat_id=chat_id,
+                    text="👇",
+                    reply_markup=reply_markup
+                )
+                sent_msg_ids.append(sent_btn.message_id)
+                final_msg_for_pin = sent_btn
+            except Exception as e:
+                logger.error(f"Button send error in {chat_id_str}: {e}")
 
         if not sent_msg_ids:
             return False
@@ -1967,9 +1998,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("💾 <b>Saved Ads Management</b>\n\nConfigure 8 Custom Ads to quickly apply them later.", parse_mode="HTML", reply_markup=saved_ads_keyboard())
         return ConversationHandler.END
 
-    # ==========================
-    # FIXED: SUB-BOT SAVED AD SELECTION LOGIC
-    # ==========================
     if cd.startswith("saved_ad_edit_"):
         slot = cd.replace("saved_ad_edit_", "", 1)
         kb = [[InlineKeyboardButton("🎯 Default (Main Bot)", callback_data=f"set_saved_bot_{slot}_main")]]
@@ -2157,7 +2185,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["batches"][bname]["media_msg_id"] = ad.get("media_msg_id")
             data["batches"][bname]["buttons"] = ad.get("buttons", [])
             
-            # Use original subbot if configured in one!
             if ad.get("bot_token"):
                 data["batches"][bname]["assigned_bot"] = ad.get("bot_token")
             
@@ -2557,7 +2584,7 @@ async def handle_sb_add_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # ==============================================================================
-# 16. BATCH CONFIGURATION STATE HANDLERS (FIXED MSG IDs)
+# 16. BATCH CONFIGURATION STATE HANDLERS
 # ==============================================================================
 
 async def handle_wait_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2654,13 +2681,12 @@ async def batch_config_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     media_sent_id, text_sent_id = await merge_media_text_and_save(context, text_msg.chat_id, media_msg, text_msg)
     
     data = load_data()
-    # BUG FIX: Direct Message IDs saved properly instead of fetching chat_id from an integer!
     data["batches"][bname]["msg_chat_id"] = text_msg.chat_id
     data["batches"][bname]["msg_id"] = text_sent_id
     data["batches"][bname]["media_msg_id"] = media_sent_id
     save_data(data)
     
-    await text_msg.reply_text("✅ <b>Text/Media Separated & Saved Successfully!</b>\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)", parse_mode="HTML", reply_markup=cancel_keyboard())
+    await text_msg.reply_text("✅ <b>Text/Media Separated & Saved Successfully!</b>\n\n👇 <b>Step 3:</b> How many inline buttons do you want? (0-20)\n\n<i>Note: Buttons will be sent separately below the text.</i>", parse_mode="HTML", reply_markup=cancel_keyboard())
     return BATCH_CONFIG_BTN_COUNT
 
 async def batch_config_btn_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2769,12 +2795,10 @@ async def saved_ad_receive_text(update: Update, context: ContextTypes.DEFAULT_TY
     media_sent_id, text_sent_id = await merge_media_text_and_save(context, text_msg.chat_id, media_msg, text_msg)
     
     data = load_data()
-    # BUG FIX: Passed exact IDs to avoid AttributeError
     data["saved_ads"][slot]["chat_id"] = text_msg.chat_id
     data["saved_ads"][slot]["msg_id"] = text_sent_id
     data["saved_ads"][slot]["media_msg_id"] = media_sent_id
     
-    # Optional: explicitly saving token since it's default here
     data["saved_ads"][slot]["bot_token"] = BOT_TOKEN
     save_data(data)
     
@@ -2853,7 +2877,6 @@ async def config_receive_ad_text(update: Update, context: ContextTypes.DEFAULT_T
     media_sent_id, text_sent_id = await merge_media_text_and_save(context, text_msg.chat_id, media_msg, text_msg)
     
     data = load_data()
-    # BUG FIX: Exact integer passing
     data["ad_source_chat_id"] = text_msg.chat_id
     data["ad_message_id"] = text_sent_id
     data["ad_media_message_id"] = media_sent_id
@@ -2971,7 +2994,6 @@ async def receive_change_ad_text(update: Update, context: ContextTypes.DEFAULT_T
     media_sent_id, text_sent_id = await merge_media_text_and_save(context, text_msg.chat_id, media_msg, text_msg)
     
     data = load_data()
-    # BUG FIX: Accurate storage as int
     data["ad_source_chat_id"] = text_msg.chat_id
     data["ad_message_id"] = text_sent_id
     data["ad_media_message_id"] = media_sent_id
