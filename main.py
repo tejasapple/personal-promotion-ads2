@@ -4,7 +4,7 @@
 # UPGRADED VERSION: Dump Channel Architecture for 100% Premium Emoji Support.
 # FIXED: Sub-Bot Direct Ads Broadcast ChatNotFound Errors (Strict Subbot Enforcement).
 # FIXED: Forward Method applied to guarantee Premium Emojis work natively.
-# ADDED: Poster Maker logic for Dump Channel automation.
+# ADDED: Poster Maker logic for Dump Channel automation (WITH BUTTON COLORS).
 # ==============================================================================
 
 import json
@@ -111,7 +111,7 @@ BUTTON_COLOR_STYLES = {
     SB_ADD_TOKEN, SB_ADD_NAME, BATCH_ASSIGN_BOT, UB_NEW_BATCH_NAME, UB_ADD_ADMIN,
     SET_DUMP_CHANNEL, POSTER_MSG, POSTER_BTN_COUNT, POSTER_BTN_NAME, POSTER_BTN_LINK, 
     POSTER_BTN_COLOR
-) = range(60)
+) = range(61) # Increased by 1 just in case, ensuring POSTER_BTN_COLOR works
 
 DEFAULT_DATA = {
     "configured": False,
@@ -450,8 +450,7 @@ def safe_url(url: str) -> str:
 def get_button_style(color: str) -> str:
     return BUTTON_COLOR_STYLES.get((color or "default").strip().lower(), "secondary")
 
-# Note: Keeping original button building logic intact as requested, 
-# although primary broadcast now uses dump channel native buttons via forward_messages.
+# Note: PTB Style Button Builder with Premium API Kwargs Injection support
 def build_buttons(buttons: list) -> Optional[InlineKeyboardMarkup]:
     if not buttons: return None
     keyboard = []
@@ -2445,7 +2444,7 @@ async def handle_sb_add_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # 16. POSTER MAKER & LINK CONFIGURATION STATE HANDLERS
 # ==============================================================================
 
-# --- POSTER MAKER HANDLERS ---
+# --- POSTER MAKER HANDLERS (WITH PTB BUTTON COLORS) ---
 async def poster_receive_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     context.user_data["poster_msg_id"] = msg.message_id
@@ -2478,7 +2477,21 @@ async def poster_receive_btn_name(update: Update, context: ContextTypes.DEFAULT_
 async def poster_receive_btn_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.effective_message.text.strip()
     if not url: return POSTER_BTN_LINK
-    context.user_data["poster_buttons"].append({"name": context.user_data["poster_cur_name"], "url": url})
+    context.user_data["poster_cur_url"] = url
+    await update.effective_message.reply_text(
+        f"🎨 Select color for Button {context.user_data['poster_cur_btn']}:", 
+        reply_markup=color_selection_keyboard()
+    )
+    return POSTER_BTN_COLOR
+
+async def poster_receive_btn_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    color = query.data.replace("color_", "")
+    
+    name = context.user_data.get("poster_cur_name")
+    url = context.user_data.get("poster_cur_url")
+    context.user_data.setdefault("poster_buttons", []).append({"name": name, "url": url, "color": color})
     
     cur = context.user_data["poster_cur_btn"]
     total = context.user_data["poster_btn_count"]
@@ -2488,7 +2501,7 @@ async def poster_receive_btn_link(update: Update, context: ContextTypes.DEFAULT_
         return ConversationHandler.END
         
     context.user_data["poster_cur_btn"] += 1
-    await update.effective_message.reply_text(f"Send button {context.user_data['poster_cur_btn']} name:", reply_markup=cancel_keyboard())
+    await query.edit_message_text(f"Send button {context.user_data['poster_cur_btn']} name:", reply_markup=cancel_keyboard())
     return POSTER_BTN_NAME
 
 async def execute_poster_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2498,7 +2511,8 @@ async def execute_poster_post(update: Update, context: ContextTypes.DEFAULT_TYPE
     chat_id = context.user_data.get("poster_chat_id")
     btns = context.user_data.get("poster_buttons", [])
     
-    pyro_markup = build_pyro_buttons(btns)
+    # PTB build_buttons injects the api_kwargs natively to telegram backend
+    ptb_markup = build_buttons(btns)
     
     try:
         if isinstance(update, Update) and update.callback_query:
@@ -2508,21 +2522,28 @@ async def execute_poster_post(update: Update, context: ContextTypes.DEFAULT_TYPE
             
         wait_msg = await reply_to.reply_text("⏳ Generating Poster and sending to Dump Channel...")
         
-        posted_msg = await main_pyro_client.copy_message(
+        # We must use context.bot.copy_message instead of main_pyro_client here to ensure api_kwargs works
+        posted_msg = await context.bot.copy_message(
             chat_id=int(dump_id),
             from_chat_id=chat_id,
             message_id=msg_id,
-            reply_markup=pyro_markup
+            reply_markup=ptb_markup
         )
         
-        post_link = f"https://t.me/c/{str(dump_id).replace('-100', '')}/{posted_msg.id}"
+        post_link = f"https://t.me/c/{str(dump_id).replace('-100', '')}/{posted_msg.message_id}"
         await wait_msg.edit_text(
             f"✅ <b>Poster Created Successfully!</b>\n\n🔗 <b>Link:</b> {post_link}\n\n<i>Use this link in Ad Setup/Start Message setup directly.</i>", 
             parse_mode="HTML", reply_markup=admin_keyboard()
         )
     except Exception as e:
         logger.error(f"Poster execution error: {e}")
-        await update.effective_message.reply_text(f"❌ Error creating poster: {e}", reply_markup=admin_keyboard())
+        
+        if isinstance(update, Update) and update.callback_query:
+            reply_to = update.callback_query.message
+        else:
+            reply_to = update.effective_message
+            
+        await reply_to.reply_text(f"❌ Error creating poster: {e}", reply_markup=admin_keyboard())
 
 # --- REST OF THE NORMAL STATES ---
 
@@ -3060,6 +3081,9 @@ def main():
             POSTER_BTN_COUNT: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, poster_receive_btn_count)],
             POSTER_BTN_NAME: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, poster_receive_btn_name)],
             POSTER_BTN_LINK: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, poster_receive_btn_link)],
+            
+            # --- COLOR SELECTION STATE ADDED HERE ---
+            POSTER_BTN_COLOR: [CallbackQueryHandler(poster_receive_btn_color, pattern="^color_")],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
@@ -3081,6 +3105,7 @@ def main():
     print("\n[+] Advanced Bot Architecture Initialized Successfully.")
     print("[+] Dump Channel Native Forward Routing Protocol Active.")
     print("[+] Sub-Bot Strict Priority Broadcast System Active...")
+    print("[+] Poster Maker Button Color Fix Deployed Successfully.")
     print("[+] Auto-Restore Core Module & Logger Services Validated.\n")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
