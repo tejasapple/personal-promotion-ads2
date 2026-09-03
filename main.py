@@ -704,7 +704,16 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
     available_groups = []
     for gid, ginfo in groups.items():
         g_bot_id = ginfo.get("bot_id")
-        if not g_bot_id or str(g_bot_id) in assigned_bot_ids:
+        
+        # STRICT Bot ID matching based on assigned_bots in this batch
+        is_valid_group = False
+        if g_bot_id and str(g_bot_id) in assigned_bot_ids:
+            is_valid_group = True
+        elif not g_bot_id and BOT_TOKEN.split(':')[0] in assigned_bot_ids:
+            # Fallback if bot_id wasn't saved properly but main bot is in the assigned list
+            is_valid_group = True
+            
+        if is_valid_group:
             assigned_to = None
             for other_bname, other_bdata in data.get("batches", {}).items():
                 if other_bname != bname and gid in other_bdata.get("groups", []):
@@ -712,8 +721,8 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
                     break
             available_groups.append((gid, ginfo, assigned_to))
             
-    # Sorting logic: unchecked (False) comes before checked (True).
-    # Within each group, sort by last_seen descending (newest first).
+    # Sorting logic: unchecked (False) comes before checked (True). (Tick वाले सबसे नीचे)
+    # Within each group, sort by last_seen descending (newest first). (नये वाले सबसे ऊपर)
     available_groups.sort(key=lambda x: (x[0] in batch_groups, -x[1].get("last_seen", 0)))
     
     kb = []
