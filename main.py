@@ -2,9 +2,9 @@
 # ADVANCED MULTI-BOT TELEGRAM BROADCASTER & USERBOT MANAGER
 # ==============================================================================
 # UPGRADED VERSION: Dump Channel Architecture for 100% Premium Emoji Support.
-# ADDED: Bot management shifted inside Batches.
-# ADDED: Multi-bot random broadcasting for batches.
-# ADDED: 3 Custom Link support per batch.
+# UPGRADED: Direct unlimited bot tokens inside batches.
+# UPGRADED: Smart Chat Sorting (New First, Ticked Last).
+# UPGRADED: Bot-specific chat filtering & Auto-Batch creation removed.
 # ==============================================================================
 
 import json
@@ -408,16 +408,18 @@ async def start_subbot_listener(token: str, name: str) -> None:
             chat = message.chat
             if not chat: return
             ctype = "channel" if str(chat.type) == "ChatType.CHANNEL" else "group"
-            save_chat_data(chat.id, chat.title, ctype)
+            bot_id_local = token.split(':')[0]
+            save_chat_data(chat.id, chat.title, ctype, bot_id=bot_id_local)
 
         @client.on_message(pyro_filters.new_chat_members)
         async def sb_added_to_chat(c: Client, message: PyroMessage):
             chat = message.chat
             me = await c.get_me()
+            bot_id_local = token.split(':')[0]
             for member in message.new_chat_members:
                 if member.id == me.id:
                     ctype = "channel" if str(chat.type) == "ChatType.CHANNEL" else "group"
-                    save_chat_data(chat.id, chat.title, ctype, chat.members_count or 0)
+                    save_chat_data(chat.id, chat.title, ctype, chat.members_count or 0, bot_id=bot_id_local)
                     await send_to_logger(f"🤖 <b>Sub-Bot ({name}) added to chat!</b>\n\n<b>Title:</b> {chat.title}")
 
         @client.on_message(pyro_filters.left_chat_member)
@@ -693,17 +695,27 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
     data = load_data()
     groups = data.get("groups", {})
     batch_groups = data.get("batches", {}).get(bname, {}).get("groups", [])
-    all_sorted = sorted(groups.items(), key=lambda x: x[1].get("last_seen", 0), reverse=True)
     
+    assigned_bots = data.get("batches", {}).get(bname, {}).get("assigned_bots", [])
+    assigned_bot_ids = [b.split(':')[0] for b in assigned_bots]
+    if not assigned_bot_ids:
+        assigned_bot_ids = [BOT_TOKEN.split(':')[0]]
+
     available_groups = []
-    for gid, ginfo in all_sorted:
-        assigned_to = None
-        for other_bname, other_bdata in data.get("batches", {}).items():
-            if other_bname != bname and gid in other_bdata.get("groups", []):
-                assigned_to = other_bname
-                break
-        available_groups.append((gid, ginfo, assigned_to))
+    for gid, ginfo in groups.items():
+        g_bot_id = ginfo.get("bot_id")
+        if not g_bot_id or str(g_bot_id) in assigned_bot_ids:
+            assigned_to = None
+            for other_bname, other_bdata in data.get("batches", {}).items():
+                if other_bname != bname and gid in other_bdata.get("groups", []):
+                    assigned_to = other_bname
+                    break
+            available_groups.append((gid, ginfo, assigned_to))
             
+    # Sorting logic: unchecked (False) comes before checked (True).
+    # Within each group, sort by last_seen descending (newest first).
+    available_groups.sort(key=lambda x: (x[0] in batch_groups, -x[1].get("last_seen", 0)))
+    
     kb = []
     ITEMS_PER_PAGE = 10
     total_pages = max(1, (len(available_groups) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
@@ -779,7 +791,7 @@ async def remember_user(update: Update) -> None:
         data["users"][uid_str]["last_seen"] = int(time.time())
     if changed: save_data(data)
 
-def save_chat_data(chat_id: int, title: str, chat_type: str, members_count: int = 0) -> None:
+def save_chat_data(chat_id: int, title: str, chat_type: str, members_count: int = 0, bot_id: str = None) -> None:
     data = load_data()
     gid_str = str(chat_id)
     today = get_today_date_str()
@@ -787,6 +799,7 @@ def save_chat_data(chat_id: int, title: str, chat_type: str, members_count: int 
 
     if gid_str not in data["groups"]:
         data["groups"][gid_str] = {"title": title or "Unknown Chat", "type": chat_type, "last_seen": int(time.time()), "date": today, "joins_today": 0, "left_today": 0, "members": members_count}
+        if bot_id: data["groups"][gid_str]["bot_id"] = bot_id
         changed = True
     else:
         if data["groups"][gid_str].get("date") != today:
@@ -803,24 +816,12 @@ def save_chat_data(chat_id: int, title: str, chat_type: str, members_count: int 
         if members_count > 0:
             data["groups"][gid_str]["members"] = members_count
             changed = True
+        if bot_id and data["groups"][gid_str].get("bot_id") != bot_id:
+            data["groups"][gid_str]["bot_id"] = bot_id
+            changed = True
         data["groups"][gid_str]["last_seen"] = int(time.time())
+        changed = True
 
-    batch_name = f"Date_{today}"
-    if "batches" not in data: data["batches"] = {}
-    if batch_name not in data["batches"]:
-        data["batches"][batch_name] = {
-            "groups": [], "msg_id_1": None, "msg_id_2": None, "msg_id_3": None, "buttons": [], 
-            "settings": {"auto_broadcast": False, "auto_delete": True, "delete_last": True, "auto_pin": False, "delay": 30, "delete_timer": 0, "link_to_global": False}, 
-            "stats": {"sent": 0, "failed": 0}, "assigned_bots": []
-        }
-        changed = True
-        
-    if gid_str not in data["batches"][batch_name]["groups"]:
-        for other_bname, other_bdata in data["batches"].items():
-            if gid_str in other_bdata.get("groups", []): other_bdata["groups"].remove(gid_str)
-        data["batches"][batch_name]["groups"].append(gid_str)
-        changed = True
-    
     if gid_str in data.get("deleted_groups", {}):
         del data["deleted_groups"][gid_str]
         changed = True
@@ -830,7 +831,8 @@ def save_chat_data(chat_id: int, title: str, chat_type: str, members_count: int 
 async def remember_group_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
     if not chat or chat.type not in ["group", "supergroup", "channel"]: return
-    save_chat_data(chat.id, chat.title, chat.type)
+    bot_id = BOT_TOKEN.split(':')[0]
+    save_chat_data(chat.id, chat.title, chat.type, bot_id=bot_id)
 
 def remove_group_and_log(chat_id_str: str, title: str) -> None:
     data = load_data()
@@ -850,7 +852,8 @@ async def track_chat_members_update(update: Update, context: ContextTypes.DEFAUL
     try: members = await chat.get_member_count()
     except Exception: members = 0
 
-    save_chat_data(chat.id, chat.title, chat.type, members)
+    bot_id = BOT_TOKEN.split(':')[0]
+    save_chat_data(chat.id, chat.title, chat.type, members, bot_id=bot_id)
     
     data = load_data()
     gid_str = str(chat.id)
@@ -868,9 +871,10 @@ async def track_bot_chat_status(update: Update, context: ContextTypes.DEFAULT_TY
     if not result: return
     chat = result.chat
     new_status = result.new_chat_member.status
+    bot_id = BOT_TOKEN.split(':')[0]
     if new_status in [ChatMember.MEMBER, ChatMember.ADMINISTRATOR]: 
         members = await chat.get_member_count()
-        save_chat_data(chat.id, chat.title, chat.type, members)
+        save_chat_data(chat.id, chat.title, chat.type, members, bot_id=bot_id)
         await send_to_logger(f"🤖 <b>Bot added to new chat!</b>\n\n<b>Title:</b> {chat.title}\n<b>Type:</b> {chat.type}\n<b>Members:</b> {members}")
     elif new_status in [ChatMember.LEFT, ChatMember.BANNED]: 
         remove_group_and_log(str(chat.id), chat.title)
@@ -922,7 +926,6 @@ async def delete_sent_message_job(context: ContextTypes.DEFAULT_TYPE):
                     history_list.remove(msg_id)
             save_data(data)
     except Exception: pass
-
 # ==============================================================================
 # 11. CORE BROADCAST EXECUTION ENGINE (UPGRADED DUMP CHANNEL FIX)
 # ==============================================================================
@@ -1980,16 +1983,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"🤖 <b>Manage Bots for Batch '{bname}'</b>\n\nJo bots yahan add rahenge, broadcast ke dauran har group me automatically unme se koi ek randomly select hoga.", parse_mode="HTML", reply_markup=build_batch_managebots_keyboard(bname))
         return ConversationHandler.END
 
+    # Direct Add Bot (BotFather Token Input) Integration Overhaul
     if cd.startswith("bat_addbot_"):
         bname = cd.replace("bat_addbot_", "", 1)
-        kb = []
-        for token, info in data.get("sub_bots", {}).items():
-            if token not in data["batches"][bname].get("assigned_bots", []):
-                kb.append([InlineKeyboardButton(f"➕ {info['name']}", callback_data=f"bat_addbotconfirm_{bname}_{token[:10]}")])
-        kb.append([InlineKeyboardButton("🔙 Cancel", callback_data=f"bat_managebots_{bname}")])
-        
-        await query.edit_message_text(f"🤖 Select a bot to add to '{bname}':", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
-        return ConversationHandler.END
+        context.user_data['target_batch_for_bot'] = bname
+        await query.edit_message_text(f"🤖 <b>Add New Bot to '{bname}'</b>\n\nKripya apne naye bot ka Token bhejein (BotFather se copy karke):", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return BATCH_ADDBOT_TOKEN
         
     if cd.startswith("bat_addbotconfirm_"):
         raw_cd = cd.replace("bat_addbotconfirm_", "", 1)
@@ -2512,7 +2511,6 @@ async def handle_sb_add_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # 16. POSTER MAKER & LINK CONFIGURATION STATE HANDLERS
 # ==============================================================================
 
-# --- POSTER MAKER HANDLERS (WITH PTB BUTTON COLORS) ---
 async def poster_receive_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     context.user_data["poster_msg_id"] = msg.message_id
@@ -3009,6 +3007,30 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text("Cancelled.", parse_mode="HTML", reply_markup=admin_keyboard())
     return ConversationHandler.END
 
+# ----------------- ADD NEW DIRECT BOT TOKENS -----------------
+
+async def handle_batch_addbot_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    token = update.effective_message.text.strip()
+    context.user_data['temp_bot_token'] = token
+    await update.effective_message.reply_text("✍️ Bot ka ek chhota naam (Name) bhejein:", parse_mode="HTML", reply_markup=cancel_keyboard())
+    return BATCH_ADDBOT_NAME
+
+async def handle_batch_addbot_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = update.effective_message.text.strip()
+    token = context.user_data.get('temp_bot_token')
+    bname = context.user_data.get('target_batch_for_bot')
+    
+    data = load_data()
+    data.setdefault("sub_bots", {})[token] = {"name": name, "added_at": int(time.time())}
+    if bname in data.get("batches", {}):
+        if token not in data["batches"][bname].setdefault("assigned_bots", []):
+            data["batches"][bname]["assigned_bots"].append(token)
+            
+    save_data(data)
+    asyncio.create_task(start_subbot_listener(token, name))
+    
+    await update.effective_message.reply_text(f"✅ Naya Bot '{name}' ban gaya aur '{bname}' batch me add ho gaya!", parse_mode="HTML", reply_markup=build_batch_managebots_keyboard(bname))
+    return ConversationHandler.END
 
 # ==============================================================================
 # 17. SYSTEM INITIALIZATION & PERSISTENCE
@@ -3157,8 +3179,11 @@ def main():
             POSTER_BTN_COUNT: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, poster_receive_btn_count)],
             POSTER_BTN_NAME: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, poster_receive_btn_name)],
             POSTER_BTN_LINK: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, poster_receive_btn_link)],
-            
             POSTER_BTN_COLOR: [CallbackQueryHandler(poster_receive_btn_color, pattern="^color_")],
+            
+            # New specific bot token inputs
+            BATCH_ADDBOT_TOKEN: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_batch_addbot_token)],
+            BATCH_ADDBOT_NAME: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_batch_addbot_name)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
