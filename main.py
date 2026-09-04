@@ -4,8 +4,8 @@
 # UPGRADED VERSION: Dump Channel Architecture for 100% Premium Emoji Support.
 # UPGRADED: Direct unlimited bot tokens inside batches.
 # UPGRADED: Smart Chat Sorting (New First, Ticked Last).
-# UPGRADED: Bot-specific chat filtering & Auto-Batch creation removed.
 # UPGRADED: Strict Bot Isolation in Broadcast & Delete Link UI Buttons Added.
+# FIXED: 100% Sub-Bot Strict Routing (Main Bot Never Broadcasts).
 # ==============================================================================
 
 import json
@@ -228,7 +228,6 @@ def load_data() -> Dict[str, Any]:
             bdata.setdefault("stats", {"sent": 0, "failed": 0})
             bdata.setdefault("assigned_bots", [])
             
-            # Migration logic from single bot string to multiple bot list
             if "assigned_bot" in bdata and bdata["assigned_bot"]:
                 if bdata["assigned_bot"] not in bdata["assigned_bots"]:
                     bdata["assigned_bots"].append(bdata["assigned_bot"])
@@ -693,20 +692,15 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
     batch_groups = data.get("batches", {}).get(bname, {}).get("groups", [])
     
     assigned_bots = data.get("batches", {}).get(bname, {}).get("assigned_bots", [])
-    assigned_bot_ids = [b.split(':')[0] for b in assigned_bots]
-    if not assigned_bot_ids:
-        assigned_bot_ids = [BOT_TOKEN.split(':')[0]]
+    assigned_bot_ids = [b.split(':')[0] for b in assigned_bots if b != BOT_TOKEN]
 
     available_groups = []
     for gid, ginfo in groups.items():
         g_bot_id = ginfo.get("bot_id")
         
-        # STRICT Bot ID matching based on assigned_bots in this batch
+        # STRICT Bot ID matching based on sub-bots assigned in this batch ONLY
         is_valid_group = False
         if g_bot_id and str(g_bot_id) in assigned_bot_ids:
-            is_valid_group = True
-        elif not g_bot_id and BOT_TOKEN.split(':')[0] in assigned_bot_ids:
-            # Fallback if bot_id wasn't saved properly but main bot is in the assigned list
             is_valid_group = True
             
         if is_valid_group:
@@ -933,7 +927,7 @@ async def delete_sent_message_job(context: ContextTypes.DEFAULT_TYPE):
     except Exception: pass
 
 # ==============================================================================
-# 11. CORE BROADCAST EXECUTION ENGINE (UPGRADED DUMP CHANNEL FIX)
+# 11. CORE BROADCAST EXECUTION ENGINE 
 # ==============================================================================
 
 async def execute_send(
@@ -1056,7 +1050,8 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
     auto_pin = settings.get("auto_pin", False)
     timer = settings.get("delete_timer", 0)
     
-    assigned_bots = bdata.get("assigned_bots", [])
+    # 1. STRICT ISOLATION: Get only valid Sub-Bots (Remove Main Bot token just in case)
+    assigned_bots = [b for b in bdata.get("assigned_bots", []) if b != BOT_TOKEN]
     
     for chat_id_str in bdata.get("groups", []):
         if chat_id_str in data.get("groups", {}):
@@ -1065,34 +1060,36 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
             
             bot_token_to_use = None
             
-            # 1. STRICT ISOLATION: Match the exact bot that added this group
-            if g_bot_id:
-                if str(g_bot_id) == str(BOT_TOKEN.split(':')[0]):
-                    bot_token_to_use = BOT_TOKEN
-                else:
-                    for t in data.get("sub_bots", {}):
-                        if t.startswith(str(g_bot_id)):
-                            bot_token_to_use = t
-                            break
+            # Match the exact sub-bot that added this group
+            if g_bot_id and str(g_bot_id) != str(BOT_TOKEN.split(':')[0]):
+                for t in assigned_bots:
+                    if t.startswith(str(g_bot_id)):
+                        bot_token_to_use = t
+                        break
             
-            # 2. Fallback to assigned bots ONLY if exact bot is somehow not recorded
-            if not bot_token_to_use:
-                bot_token_to_use = random.choice(assigned_bots) if assigned_bots else BOT_TOKEN
+            # Fallback to ANY assigned sub-bot (Strictly NO MAIN BOT)
+            if not bot_token_to_use and assigned_bots:
+                bot_token_to_use = random.choice(assigned_bots)
             
-            client_to_use = main_pyro_client
-            if bot_token_to_use != BOT_TOKEN:
-                if bot_token_to_use not in sub_bot_clients:
-                    bot_info = data.get("sub_bots", {}).get(bot_token_to_use)
-                    if bot_info:
-                        await start_subbot_listener(bot_token_to_use, bot_info.get("name", "Unknown"))
-                        
-                client_to_use = sub_bot_clients.get(bot_token_to_use)
+            # IF NO VALID SUB-BOT FOUND, SKIP THIS GROUP.
+            if not bot_token_to_use or bot_token_to_use == BOT_TOKEN:
+                failed_cnt += 1
+                bdata["stats"]["failed"] = bdata["stats"].get("failed", 0) + 1
+                continue
+            
+            if bot_token_to_use not in sub_bot_clients:
+                bot_info = data.get("sub_bots", {}).get(bot_token_to_use)
+                if bot_info:
+                    await start_subbot_listener(bot_token_to_use, bot_info.get("name", "Unknown"))
+                    
+            client_to_use = sub_bot_clients.get(bot_token_to_use)
                 
             if not client_to_use:
                 failed_cnt += 1
                 bdata["stats"]["failed"] = bdata["stats"].get("failed", 0) + 1
                 continue
 
+            # Uses strictly batch links (msg_id_1, msg_id_2, msg_id_3 from bdata)
             is_sent = await execute_send(
                 client_to_use, chat_id_str, data["dump_channel_id"], 
                 bdata.get("msg_id_1"), bdata.get("msg_id_2"), bdata.get("msg_id_3"),
@@ -1125,7 +1122,6 @@ async def batch_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         for job in context.job_queue.get_jobs_by_name(job_name): job.schedule_removal()
         return
     await broadcast_batch(context, bname)
-
 # ==============================================================================
 # 12. USERBOTS - SPECIFIC OPERATIONS
 # ==============================================================================
@@ -1484,6 +1480,7 @@ async def run_userbot_add_admin(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         await reply.edit_text(f"❌ Error during Add Admin task: {e}", reply_markup=userbot_single_keyboard(ub_id))
     return ConversationHandler.END
+
 # ==============================================================================
 # 13. MAIN COMMAND HANDLERS
 # ==============================================================================
@@ -2688,7 +2685,7 @@ async def receive_batch_delete_n(update: Update, context: ContextTypes.DEFAULT_T
         await update.effective_message.reply_text("❌ Batch not found.", parse_mode="HTML", reply_markup=cancel_keyboard())
         return ConversationHandler.END
     
-    assigned_bots = bdata.get("assigned_bots", [])
+    assigned_bots = [b for b in bdata.get("assigned_bots", []) if b != BOT_TOKEN]
     msg_reply = await update.effective_message.reply_text(f"⏳ Attempting to delete last {n} messages in all chats for '{bname}'...")
     
     async def run_delete(bot_instance):
@@ -2713,11 +2710,15 @@ async def receive_batch_delete_n(update: Update, context: ContextTypes.DEFAULT_T
         return deleted_count, failed_count
 
     if assigned_bots:
-        # Fallback loop, just try to delete with the first available bot in the list
-        bot_used = sub_bot_clients.get(assigned_bots[0]) if assigned_bots[0] in sub_bot_clients else main_pyro_client
-        del_c, fail_c = await run_delete(bot_used)
-    else: 
-        del_c, fail_c = await run_delete(main_pyro_client)
+        # Strictly use the first available valid sub-bot assigned to this batch
+        bot_used = sub_bot_clients.get(assigned_bots[0])
+        if bot_used:
+            del_c, fail_c = await run_delete(bot_used)
+        else:
+            del_c, fail_c = 0, len(bdata.get("groups", []))
+    else:
+        # If no bot is assigned, skip the main bot and fail safely (Strict Isolation)
+        del_c, fail_c = 0, len(bdata.get("groups", []))
         
     save_data(data)
     await msg_reply.edit_text(f"✅ Bulk Deletion complete for batch '{bname}'.\n\n🗑️ Successfully Deleted: {del_c}\n❌ Failed/Missing: {fail_c}", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
