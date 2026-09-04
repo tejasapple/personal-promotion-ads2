@@ -10,7 +10,8 @@
 # NEW: "Scraper" Feature - Multiple Scrapers with Active Checkbox Tick selection!
 # FIXED: Cache/0-member Group Deletion & CHANNEL_INVALID Forward Exceptions.
 # FIXED: Bot Sub-Menu UI and Deletion functionality.
-# FIXED: Group visibility issue in batch assignments.
+# FIXED: Strict Bot Isolation in Batch Add/Remove Groups Menu.
+# FIXED: Auto-Broadcast Job Persistence and Timer Execution.
 # ==============================================================================
 
 import json
@@ -672,7 +673,6 @@ def build_batch_managebots_keyboard(bname: str) -> InlineKeyboardMarkup:
     assigned_bots = bdata.get("assigned_bots", [])
     kb = []
     
-    # Isolation: Find bots that are already assigned to OTHER batches
     assigned_elsewhere = []
     for obname, obdata in data.get("batches", {}).items():
         if obname != bname:
@@ -680,7 +680,7 @@ def build_batch_managebots_keyboard(bname: str) -> InlineKeyboardMarkup:
             
     for token, info in data.get("sub_bots", {}).items():
         if token in assigned_elsewhere:
-            continue # Strict Isolation: If assigned to another batch, do not show here.
+            continue
         status = "✅" if token in assigned_bots else "❌"
         kb.append([InlineKeyboardButton(f"{status} 🤖 {info.get('name', 'Unknown')}", callback_data=f"bat_togbot_{bname}_{token[:10]}")])
         
@@ -726,14 +726,27 @@ def build_batch_usesaved_keyboard(bname: str) -> InlineKeyboardMarkup:
     kb.append([InlineKeyboardButton("🔙 Cancel", callback_data=f"bat_menu_{bname}")])
     return InlineKeyboardMarkup(kb)
 
+# --- STRICT BOT ISOLATION FIX APPLIED HERE ---
 def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup:
     data = load_data()
     groups = data.get("groups", {})
-    batch_groups = data.get("batches", {}).get(bname, {}).get("groups", [])
+    bdata = data.get("batches", {}).get(bname, {})
+    batch_groups = bdata.get("groups", [])
     
+    assigned_bots = bdata.get("assigned_bots", [])
+    main_bot_id = BOT_TOKEN.split(':')[0]
+    
+    # Extract prefix IDs for active bot isolation. If no bots assigned, default to main bot groups.
+    assigned_bot_ids = [t.split(':')[0] for t in assigned_bots] if assigned_bots else [main_bot_id]
+
     available_groups = []
     for gid, ginfo in groups.items():
-        # FIX: Removed the restrictive is_valid_group check to ensure ALL groups are visible.
+        g_bot_id = str(ginfo.get("bot_id", main_bot_id))
+        
+        # STRICT ISOLATION FILTER: Skip groups not assigned to this batch's bots
+        if g_bot_id not in assigned_bot_ids:
+            continue
+            
         assigned_to = None
         for other_bname, other_bdata in data.get("batches", {}).items():
             if other_bname != bname and gid in other_bdata.get("groups", []):
@@ -768,7 +781,6 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
     if nav: kb.append(nav)
     kb.append([InlineKeyboardButton("🔙 Done", callback_data=f"bat_menu_{bname}")])
     return InlineKeyboardMarkup(kb)
-
 def build_date_stats_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     data = load_data()
     groups = data.get("groups", {})
@@ -924,6 +936,7 @@ def schedule_ads_job(context: ContextTypes.DEFAULT_TYPE, first: int = None) -> N
     remove_ads_jobs(context)
     context.job_queue.run_repeating(ads_cycle_job, interval=delay, first=first, name=ADS_JOB_NAME)
 
+# --- STRICT AUTO-BROADCAST JOB FIX APPLIED HERE ---
 def manage_batch_job(context: ContextTypes.DEFAULT_TYPE, bname: str, start: bool) -> None:
     if not context.job_queue: return
     job_name = f"batch_job_{bname}"
@@ -931,7 +944,9 @@ def manage_batch_job(context: ContextTypes.DEFAULT_TYPE, bname: str, start: bool
     if start:
         data = load_data()
         bdata = data.get("batches", {}).get(bname)
-        if bdata and (bdata.get("msg_id_1") or bdata.get("msg_id_2") or bdata.get("msg_id_3")):
+        # Fix: Removed strict message requirement here to allow seamless scheduling. 
+        # Execution is checked inside `batch_cycle_job` instead to prevent pausing if active scraper changes.
+        if bdata:
             delay = max(1, int(bdata["settings"].get("delay", 30)))
             context.job_queue.run_repeating(batch_cycle_job, interval=delay, first=0, data=bname, name=job_name)
 
@@ -971,6 +986,7 @@ async def execute_send(
     except:
         return False
 
+    # --- DELETE LAST MESSAGE ROBUSTNESS FIX ---
     last_msg_ids = data.get("last_sent_msg_id", {}).get(chat_id_str)
     if delete_last and last_msg_ids:
         if isinstance(last_msg_ids, list):
@@ -978,7 +994,7 @@ async def execute_send(
                 await pyro_client.delete_messages(chat_id=chat_id, message_ids=last_msg_ids)
             except Exception: pass
         else:
-            try: await pyro_client.delete_messages(chat_id=chat_id, message_ids=last_msg_ids)
+            try: await pyro_client.delete_messages(chat_id=chat_id, message_ids=[last_msg_ids])
             except Exception: pass 
 
     try:
@@ -997,7 +1013,6 @@ async def execute_send(
             except Exception as fe:
                 err_str = str(fe).lower()
                 logger.error(f"Forward error in {chat_id_str}: {fe}")
-                # Log but DO NOT fail the whole batch for CHANNEL_INVALID
                 if "channel_invalid" in err_str:
                     logger.warning(f"Bot {bot_token[:10]} lacks Dump Channel access!")
                 return None
@@ -1051,7 +1066,6 @@ async def broadcast_ads(context: ContextTypes.DEFAULT_TYPE) -> tuple[int, int]:
     groups = list(data.get("groups", {}).keys())
     sent, failed = 0, 0
     
-    # Generate list of all dump channel IDs to avoid looping broadcasts into them
     all_dump_ids = []
     if data.get("dump_channel_id"):
         all_dump_ids.append(str(data.get("dump_channel_id")))
@@ -1063,7 +1077,7 @@ async def broadcast_ads(context: ContextTypes.DEFAULT_TYPE) -> tuple[int, int]:
         timer = data.get("delete_timer", 0)
         for chat_id_str in groups:
             if str(chat_id_str) in all_dump_ids:
-                continue # Skip broadcasting to any dump channel
+                continue 
                 
             in_batch = any(chat_id_str in bdata.get("groups", []) for bdata in data.get("batches", {}).values())
             if not in_batch:
@@ -1089,7 +1103,6 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
     bdata = data.get("batches", {}).get(bname)
     if not bdata: return 0, 0
     
-    # Generate list of all dump channel IDs to avoid loop
     all_dump_ids = []
     if data.get("dump_channel_id"):
         all_dump_ids.append(str(data.get("dump_channel_id")))
@@ -1097,7 +1110,6 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
         if bd.get("dump_channel_id"):
             all_dump_ids.append(str(bd.get("dump_channel_id")))
             
-    # NEW SCRAPER LOGIC: Send ONLY the Active Scraper Link
     active = bdata.get("active_scraper", 1)
     msg1, msg2, msg3 = None, None, None
     if active == 1: msg1 = bdata.get("msg_id_1")
@@ -1115,18 +1127,14 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
     
     dump_to_use = bdata.get("dump_channel_id")
     if not dump_to_use:
-        # Strict isolation: If batch dump is not set, it fails broadcast. 
-        # (This ensures it NEVER picks from the global dump inadvertently)
         return 0, len(bdata.get("groups", []))
     
     assigned_bots = [b for b in bdata.get("assigned_bots", []) if b != BOT_TOKEN]
-    
-    # Safe copy to avoid dict size changing during iteration if groups get deleted
     batch_groups = list(bdata.get("groups", []))
     
     for chat_id_str in batch_groups:
         if str(chat_id_str) in all_dump_ids:
-            continue # Fix: Prevent broadcasting back into dump channels
+            continue
             
         if chat_id_str in data.get("groups", {}):
             ginfo = data["groups"][chat_id_str]
@@ -1162,7 +1170,7 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
 
             is_sent = await execute_send(
                 client_to_use, chat_id_str, dump_to_use, 
-                msg1, msg2, msg3, # Here msg1 has the active scraper link
+                msg1, msg2, msg3,
                 auto_delete=auto_del, delete_last=del_last, auto_pin=auto_pin, 
                 delete_timer=timer, context=context, bot_token=bot_token_to_use
             )
@@ -2039,7 +2047,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(txt, reply_markup=build_single_batch_keyboard(bname), parse_mode="HTML")
         return ConversationHandler.END
 
-    # --- NEW: ISOLATED BATCH DUMP CHANNEL SETUP ---
     if cd.startswith("bat_setdump_"):
         bname = cd.replace("bat_setdump_", "", 1)
         context.user_data['current_batch_setup'] = bname
@@ -2050,7 +2057,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML", reply_markup=cancel_keyboard()
         )
         return BAT_SET_DUMP_CHANNEL
-    # ----------------------------------------------
 
     if cd.startswith("bat_fullinfo_"):
         bname = cd.replace("bat_fullinfo_", "", 1)
@@ -2156,7 +2162,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"⚙️ <b>Configure Scrapers ({bname})</b>\n\nYahan tum 3 custom scrapers setup kar sakte ho aur tick (✅) karke choose kar sakte ho ki abhi kaunsa scraper message broadcast karega.", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
         return ConversationHandler.END
         
-    # NEW: Handle Tick Marks (✅) for Scrapers
     if cd.startswith("bat_sel_"):
         raw = cd.replace("bat_sel_", "", 1)
         scraper_num, _, bname = raw.partition("_")
@@ -2743,7 +2748,6 @@ async def handle_set_dump_channel(update: Update, context: ContextTypes.DEFAULT_
     await update.effective_message.reply_text("✅ <b>Global Dump Channel Setup Successful!</b>\n\nAb tum Global Links/Posters setup kar sakte ho.", parse_mode="HTML", reply_markup=admin_keyboard())
     return ConversationHandler.END
 
-# --- NEW: HANDLE BATCH DUMP CHANNEL ---
 async def handle_batch_set_dump_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dump_id = update.effective_message.text.strip()
     bname = context.user_data.get('current_batch_setup')
@@ -2763,7 +2767,6 @@ async def handle_batch_set_dump_channel(update: Update, context: ContextTypes.DE
     else:
         await update.effective_message.reply_text("❌ Batch not found.", reply_markup=admin_keyboard())
     return ConversationHandler.END
-# --------------------------------------
 
 async def handle_wait_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -2827,14 +2830,12 @@ async def receive_batch_delete_n(update: Update, context: ContextTypes.DEFAULT_T
         return deleted_count, failed_count
 
     if assigned_bots:
-        # Strictly use the first available valid sub-bot assigned to this batch
         bot_used = sub_bot_clients.get(assigned_bots[0])
         if bot_used:
             del_c, fail_c = await run_delete(bot_used)
         else:
             del_c, fail_c = 0, len(bdata.get("groups", []))
     else:
-        # If no bot is assigned, skip the main bot and fail safely (Strict Isolation)
         del_c, fail_c = 0, len(bdata.get("groups", []))
         
     save_data(data)
@@ -2897,7 +2898,6 @@ async def batch_config_link_3(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.effective_message.reply_text("✅ <b>Scraper 3 Updated successfully!</b>", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
     return ConversationHandler.END
 
-# Legacy button handlers
 async def batch_config_btn_count(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
 async def batch_config_btn_name(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
 async def batch_config_btn_link(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
@@ -3198,6 +3198,7 @@ async def send_restart_auto_backup(token: str, chat_id: int, count: int, session
     except Exception as e:
         logger.error(f"Logger Restart Backup Error: {e}")
 
+# --- STRICT INITIALIZATION FIX APPLIED HERE ---
 async def post_init(application: Application) -> None:
     data = load_data()
     
@@ -3212,7 +3213,8 @@ async def post_init(application: Application) -> None:
             application.job_queue.run_repeating(ads_cycle_job, interval=delay, first=delay, name=ADS_JOB_NAME)
             
         for bname, bdata in data.get("batches", {}).items():
-            if bdata.get("settings", {}).get("auto_broadcast") and (bdata.get("msg_id_1") or bdata.get("msg_id_2") or bdata.get("msg_id_3")):
+            # Fix: Always restart the job loop if auto_broadcast is True (removed strict msg presence check)
+            if bdata.get("settings", {}).get("auto_broadcast"):
                 delay = max(1, int(bdata["settings"].get("delay", 30)))
                 application.job_queue.run_repeating(batch_cycle_job, interval=delay, first=delay, data=bname, name=f"batch_job_{bname}")
 
