@@ -6,9 +6,11 @@
 # UPGRADED: Smart Chat Sorting (New First, Ticked Last).
 # UPGRADED: Strict Bot Isolation in Broadcast & Delete Link UI Buttons Added.
 # UPGRADED: Isolated Batch-Specific Dump Channels (Complete Isolation per Batch).
-# FIXED: 100% Sub-Bot Strict Routing (Main Bot Never Broadcasts).
+# FIXED: 100% Sub-Bot Strict Routing (Main Bot Never Broadcasts to Dump Channels).
 # NEW: "Scraper" Feature - Multiple Scrapers with Active Checkbox Tick selection!
 # FIXED: Cache/0-member Group Deletion & CHANNEL_INVALID Forward Exceptions.
+# FIXED: Bot Sub-Menu UI and Deletion functionality.
+# FIXED: Group visibility issue in batch assignments.
 # ==============================================================================
 
 import json
@@ -519,6 +521,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📨 Send Global Broadcast ONCE", callback_data="send_once")],
         [InlineKeyboardButton("🗂️ Manage Batches (Custom Msgs)", callback_data="groups_batches_menu")],
         [InlineKeyboardButton("📱 Manage Ads Accounts (Manager)", callback_data="userbots_menu")],
+        [InlineKeyboardButton("🤖 Manage Multi-Bots", callback_data="subbots_menu")],
         [InlineKeyboardButton("📢 Set Global Dump Channel", callback_data="set_dump_channel"), InlineKeyboardButton("🎨 Poster Maker (Dump)", callback_data="poster_maker_menu")],
         [InlineKeyboardButton("⚙️ Global Ad & Old Settings", callback_data="old_settings_menu")]
     ])
@@ -602,6 +605,15 @@ def userbot_single_keyboard(ub_id: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🔙 Back to Batch", callback_data=f"ub_bview_{batch}")]
     ])
 
+def subbots_keyboard() -> InlineKeyboardMarkup:
+    data = load_data()
+    kb = []
+    for token, info in data.get("sub_bots", {}).items():
+        kb.append([InlineKeyboardButton(f"🤖 {info['name']}", callback_data=f"sb_menu_{token[:10]}")])
+    kb.append([InlineKeyboardButton("➕ Add New Sub-Bot", callback_data="sb_add")])
+    kb.append([InlineKeyboardButton("🔙 Back to Main Menu", callback_data="main_menu")])
+    return InlineKeyboardMarkup(kb)
+
 def build_batches_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     data = load_data()
     kb = []
@@ -660,7 +672,15 @@ def build_batch_managebots_keyboard(bname: str) -> InlineKeyboardMarkup:
     assigned_bots = bdata.get("assigned_bots", [])
     kb = []
     
+    # Isolation: Find bots that are already assigned to OTHER batches
+    assigned_elsewhere = []
+    for obname, obdata in data.get("batches", {}).items():
+        if obname != bname:
+            assigned_elsewhere.extend(obdata.get("assigned_bots", []))
+            
     for token, info in data.get("sub_bots", {}).items():
+        if token in assigned_elsewhere:
+            continue # Strict Isolation: If assigned to another batch, do not show here.
         status = "✅" if token in assigned_bots else "❌"
         kb.append([InlineKeyboardButton(f"{status} 🤖 {info.get('name', 'Unknown')}", callback_data=f"bat_togbot_{bname}_{token[:10]}")])
         
@@ -711,24 +731,15 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
     groups = data.get("groups", {})
     batch_groups = data.get("batches", {}).get(bname, {}).get("groups", [])
     
-    assigned_bots = data.get("batches", {}).get(bname, {}).get("assigned_bots", [])
-    assigned_bot_ids = [b.split(':')[0] for b in assigned_bots if b != BOT_TOKEN]
-
     available_groups = []
     for gid, ginfo in groups.items():
-        g_bot_id = ginfo.get("bot_id")
-        
-        is_valid_group = False
-        if g_bot_id and str(g_bot_id) in assigned_bot_ids:
-            is_valid_group = True
-            
-        if is_valid_group:
-            assigned_to = None
-            for other_bname, other_bdata in data.get("batches", {}).items():
-                if other_bname != bname and gid in other_bdata.get("groups", []):
-                    assigned_to = other_bname
-                    break
-            available_groups.append((gid, ginfo, assigned_to))
+        # FIX: Removed the restrictive is_valid_group check to ensure ALL groups are visible.
+        assigned_to = None
+        for other_bname, other_bdata in data.get("batches", {}).items():
+            if other_bname != bname and gid in other_bdata.get("groups", []):
+                assigned_to = other_bname
+                break
+        available_groups.append((gid, ginfo, assigned_to))
             
     available_groups.sort(key=lambda x: (x[0] in batch_groups, -x[1].get("last_seen", 0)))
     
@@ -1039,9 +1050,21 @@ async def broadcast_ads(context: ContextTypes.DEFAULT_TYPE) -> tuple[int, int]:
     data = load_data()
     groups = list(data.get("groups", {}).keys())
     sent, failed = 0, 0
+    
+    # Generate list of all dump channel IDs to avoid looping broadcasts into them
+    all_dump_ids = []
+    if data.get("dump_channel_id"):
+        all_dump_ids.append(str(data.get("dump_channel_id")))
+    for bdata in data.get("batches", {}).values():
+        if bdata.get("dump_channel_id"):
+            all_dump_ids.append(str(bdata.get("dump_channel_id")))
+
     if has_ad_config(data):
         timer = data.get("delete_timer", 0)
         for chat_id_str in groups:
+            if str(chat_id_str) in all_dump_ids:
+                continue # Skip broadcasting to any dump channel
+                
             in_batch = any(chat_id_str in bdata.get("groups", []) for bdata in data.get("batches", {}).values())
             if not in_batch:
                 is_sent = await execute_send(
@@ -1066,6 +1089,14 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
     bdata = data.get("batches", {}).get(bname)
     if not bdata: return 0, 0
     
+    # Generate list of all dump channel IDs to avoid loop
+    all_dump_ids = []
+    if data.get("dump_channel_id"):
+        all_dump_ids.append(str(data.get("dump_channel_id")))
+    for bd in data.get("batches", {}).values():
+        if bd.get("dump_channel_id"):
+            all_dump_ids.append(str(bd.get("dump_channel_id")))
+            
     # NEW SCRAPER LOGIC: Send ONLY the Active Scraper Link
     active = bdata.get("active_scraper", 1)
     msg1, msg2, msg3 = None, None, None
@@ -1094,6 +1125,9 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
     batch_groups = list(bdata.get("groups", []))
     
     for chat_id_str in batch_groups:
+        if str(chat_id_str) in all_dump_ids:
+            continue # Fix: Prevent broadcasting back into dump channels
+            
         if chat_id_str in data.get("groups", {}):
             ginfo = data["groups"][chat_id_str]
             g_bot_id = ginfo.get("bot_id")
@@ -1158,6 +1192,7 @@ async def batch_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         for job in context.job_queue.get_jobs_by_name(job_name): job.schedule_removal()
         return
     await broadcast_batch(context, bname)
+
 # ==============================================================================
 # 12. USERBOTS - SPECIFIC OPERATIONS
 # ==============================================================================
