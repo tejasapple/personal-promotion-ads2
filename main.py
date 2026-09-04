@@ -650,20 +650,15 @@ def build_single_batch_keyboard(bname: str) -> InlineKeyboardMarkup:
 def build_batch_managebots_keyboard(bname: str) -> InlineKeyboardMarkup:
     data = load_data()
     bdata = data.get("batches", {}).get(bname, {})
-    kb = [[InlineKeyboardButton("➕ Add New Bot", callback_data=f"bat_addbot_{bname}")]]
+    assigned_bots = bdata.get("assigned_bots", [])
+    kb = []
     
-    for token in bdata.get("assigned_bots", []):
-        info = data.get("sub_bots", {}).get(token, {})
-        kb.append([InlineKeyboardButton(f"🤖 {info.get('name', 'Unknown')}", callback_data=f"bat_botopts_{bname}_{token[:10]}")])
+    for token, info in data.get("sub_bots", {}).items():
+        status = "✅" if token in assigned_bots else "❌"
+        kb.append([InlineKeyboardButton(f"{status} 🤖 {info.get('name', 'Unknown')}", callback_data=f"bat_togbot_{bname}_{token[:10]}")])
         
+    kb.append([InlineKeyboardButton("➕ Add New Bot", callback_data=f"bat_addbot_{bname}")])
     kb.append([InlineKeyboardButton("🔙 Back to Batch", callback_data=f"bat_menu_{bname}")])
-    return InlineKeyboardMarkup(kb)
-
-def build_batch_botopts_keyboard(bname: str, token_prefix: str) -> InlineKeyboardMarkup:
-    kb = [
-        [InlineKeyboardButton("🗑️ Remove Bot from Batch", callback_data=f"bat_rmbot_{bname}_{token_prefix}")],
-        [InlineKeyboardButton("🔙 Back", callback_data=f"bat_managebots_{bname}")]
-    ]
     return InlineKeyboardMarkup(kb)
 
 def build_batch_setmsg_keyboard(bname: str) -> InlineKeyboardMarkup:
@@ -721,8 +716,8 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
                     break
             available_groups.append((gid, ginfo, assigned_to))
             
-    # Sorting logic: unchecked (False) comes before checked (True). (Tick वाले सबसे नीचे)
-    # Within each group, sort by last_seen descending (newest first). (नये वाले सबसे ऊपर)
+    # Sorting logic: unchecked (False) comes before checked (True). (Tick wale sabse niche)
+    # Within each group, sort by last_seen descending (newest first). (Naye wale sabse upar)
     available_groups.sort(key=lambda x: (x[0] in batch_groups, -x[1].get("last_seen", 0)))
     
     kb = []
@@ -751,6 +746,9 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
     kb.append([InlineKeyboardButton("🔙 Done", callback_data=f"bat_menu_{bname}")])
     return InlineKeyboardMarkup(kb)
 
+# ==============================================================================
+# JAB BHI TUM 'continue' LIKHOGE, MAIN PART 2 DENA START KARUNGA
+# ==============================================================================
 def build_date_stats_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     data = load_data()
     groups = data.get("groups", {})
@@ -1992,7 +1990,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"🤖 <b>Manage Bots for Batch '{bname}'</b>\n\nJo bots yahan add rahenge, broadcast ke dauran har group me automatically unme se koi ek randomly select hoga.", parse_mode="HTML", reply_markup=build_batch_managebots_keyboard(bname))
         return ConversationHandler.END
 
-    # Direct Add Bot (BotFather Token Input) Integration Overhaul
     if cd.startswith("bat_addbot_"):
         bname = cd.replace("bat_addbot_", "", 1)
         context.user_data['target_batch_for_bot'] = bname
@@ -2009,23 +2006,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"✅ Bot added to {bname}.", parse_mode="HTML", reply_markup=build_batch_managebots_keyboard(bname))
         return ConversationHandler.END
 
-    if cd.startswith("bat_botopts_"):
-        raw_cd = cd.replace("bat_botopts_", "", 1)
+    if cd.startswith("bat_togbot_"):
+        raw_cd = cd.replace("bat_togbot_", "", 1)
         bname, _, token_prefix = raw_cd.rpartition("_")
         full_token = next((t for t in data["sub_bots"] if t.startswith(token_prefix)), None)
         if full_token:
-            bot_name = data["sub_bots"][full_token].get('name', 'Unknown')
-            await query.edit_message_text(f"🤖 <b>Bot Options:</b> {bot_name} in '{bname}'", parse_mode="HTML", reply_markup=build_batch_botopts_keyboard(bname, token_prefix))
-        return ConversationHandler.END
-
-    if cd.startswith("bat_rmbot_"):
-        raw_cd = cd.replace("bat_rmbot_", "", 1)
-        bname, _, token_prefix = raw_cd.rpartition("_")
-        full_token = next((t for t in data["sub_bots"] if t.startswith(token_prefix)), None)
-        if full_token and full_token in data["batches"][bname].get("assigned_bots", []):
-            data["batches"][bname]["assigned_bots"].remove(full_token)
+            assigned = data["batches"][bname].setdefault("assigned_bots", [])
+            if full_token in assigned:
+                assigned.remove(full_token)
+            else:
+                assigned.append(full_token)
             save_data(data)
-        await query.edit_message_text(f"🗑️ Bot removed from {bname}.", parse_mode="HTML", reply_markup=build_batch_managebots_keyboard(bname))
+        await query.edit_message_reply_markup(reply_markup=build_batch_managebots_keyboard(bname))
         return ConversationHandler.END
 
     if cd.startswith("bat_edit_"):
@@ -2708,7 +2700,7 @@ async def batch_config_link_1(update: Update, context: ContextTypes.DEFAULT_TYPE
     bname = context.user_data.get('current_batch_setup')
     data = load_data()
     
-    if text.lower() == '/remove':
+    if text.lower().strip() in ['/remove', 'remove']:[span_0](start_span)[span_0](end_span)
         data["batches"][bname]["msg_id_1"] = None
     else:
         msg_id = extract_msg_id_from_link(text)
@@ -2726,7 +2718,7 @@ async def batch_config_link_2(update: Update, context: ContextTypes.DEFAULT_TYPE
     bname = context.user_data.get('current_batch_setup')
     data = load_data()
 
-    if text.lower() == '/remove':
+    if text.lower().strip() in ['/remove', 'remove']:[span_1](start_span)[span_1](end_span)
         data["batches"][bname]["msg_id_2"] = None
     else:
         msg_id = extract_msg_id_from_link(text)
@@ -2744,7 +2736,7 @@ async def batch_config_link_3(update: Update, context: ContextTypes.DEFAULT_TYPE
     bname = context.user_data.get('current_batch_setup')
     data = load_data()
 
-    if text.lower() == '/remove':
+    if text.lower().strip() in ['/remove', 'remove']:[span_2](start_span)[span_2](end_span)
         data["batches"][bname]["msg_id_3"] = None
     else:
         msg_id = extract_msg_id_from_link(text)
@@ -2816,7 +2808,7 @@ async def saved_ad_receive_link_2(update: Update, context: ContextTypes.DEFAULT_
     slot = context.user_data.get('current_saved_ad_slot')
     data = load_data()
 
-    if text.lower() == '/skip':
+    if text.lower().strip() in ['/skip', 'skip']:[span_3](start_span)[span_3](end_span)
         data["saved_ads"][slot]["msg_id_2"] = None
     else:
         msg_id = extract_msg_id_from_link(text)
@@ -2853,7 +2845,7 @@ async def config_receive_ad_link_2(update: Update, context: ContextTypes.DEFAULT
     text = update.effective_message.text.strip()
     data = load_data()
 
-    if text.lower() == '/skip':
+    if text.lower().strip() in ['/skip', 'skip']:[span_4](start_span)[span_4](end_span)
         data["ad_msg_id_2"] = None
     else:
         msg_id = extract_msg_id_from_link(text)
@@ -2926,7 +2918,7 @@ async def receive_change_ad_link_2(update: Update, context: ContextTypes.DEFAULT
     text = update.effective_message.text.strip()
     data = load_data()
 
-    if text.lower() == '/skip':
+    if text.lower().strip() in ['/skip', 'skip']:[span_5](start_span)[span_5](end_span)
         data["ad_msg_id_2"] = None
     else:
         msg_id = extract_msg_id_from_link(text)
@@ -2964,7 +2956,7 @@ async def receive_change_start_link_2(update: Update, context: ContextTypes.DEFA
     text = update.effective_message.text.strip()
     data = load_data()
 
-    if text.lower() == '/skip':
+    if text.lower().strip() in ['/skip', 'skip']:[span_6](start_span)[span_6](end_span)
         data["start_msg_id_2"] = None
     else:
         msg_id = extract_msg_id_from_link(text)
