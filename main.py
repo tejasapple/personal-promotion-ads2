@@ -6,6 +6,8 @@
 # UPGRADED: Smart Chat Sorting (New First, Ticked Last).
 # UPGRADED: Strict Bot Isolation in Broadcast & Delete Link UI Buttons Added.
 # FIXED: 100% Sub-Bot Strict Routing (Main Bot Never Broadcasts).
+# NEW: "Scraper" Feature - Multiple Scrapers with Active Checkbox Tick selection!
+# FIXED: Cache/0-member Group Deletion & CHANNEL_INVALID Forward Exceptions.
 # ==============================================================================
 
 import json
@@ -214,7 +216,7 @@ def load_data() -> Dict[str, Any]:
     for bname, bdata in list(data["batches"].items()):
         if isinstance(bdata, list):
             data["batches"][bname] = {
-                "groups": bdata, "msg_id_1": None, "msg_id_2": None, "msg_id_3": None, "buttons": [],
+                "groups": bdata, "msg_id_1": None, "msg_id_2": None, "msg_id_3": None, "active_scraper": 1, "buttons": [],
                 "settings": {"auto_broadcast": False, "auto_delete": True, "delete_last": True, "auto_pin": False, "delay": 30, "delete_timer": 0, "link_to_global": False},
                 "stats": {"sent": 0, "failed": 0}, "assigned_bots": []
             }
@@ -222,6 +224,7 @@ def load_data() -> Dict[str, Any]:
             bdata.setdefault("msg_id_1", None)
             bdata.setdefault("msg_id_2", None)
             bdata.setdefault("msg_id_3", None)
+            bdata.setdefault("active_scraper", 1)
             bdata.setdefault("settings", {"auto_broadcast": False, "auto_delete": True, "delete_last": True, "auto_pin": False, "delay": 30, "delete_timer": 0, "link_to_global": False})
             bdata["settings"].setdefault("delete_last", True)
             bdata["settings"].setdefault("link_to_global", False)
@@ -636,7 +639,7 @@ def build_single_batch_keyboard(bname: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📊 Get Full Info (To Logger)", callback_data=f"bat_fullinfo_{bname}")],
         [InlineKeyboardButton("👥 Add/Remove Chats", callback_data=f"bat_edit_{bname}=0")],
         [InlineKeyboardButton("🤖 Manage Bots", callback_data=f"bat_managebots_{bname}")],
-        [InlineKeyboardButton("⚙️ Set Custom Msg", callback_data=f"bat_setmsgmenu_{bname}")],
+        [InlineKeyboardButton("⚙️ Configure Scrapers (Custom Msg)", callback_data=f"bat_setmsgmenu_{bname}")],
         [InlineKeyboardButton("📂 Use Saved Ad", callback_data=f"bat_usesaved_{bname}"), InlineKeyboardButton("🧹 Bulk Delete Msgs", callback_data=f"bat_delmsg_{bname}")],
         [InlineKeyboardButton(bcast_txt, callback_data=f"bat_tog_bcast_{bname}")],
         [InlineKeyboardButton(del_last_txt, callback_data=f"bat_tog_dellast_{bname}"), InlineKeyboardButton(del_txt, callback_data=f"bat_tog_del_{bname}")],
@@ -661,16 +664,30 @@ def build_batch_managebots_keyboard(bname: str) -> InlineKeyboardMarkup:
     kb.append([InlineKeyboardButton("🔙 Back to Batch", callback_data=f"bat_menu_{bname}")])
     return InlineKeyboardMarkup(kb)
 
+# NEW: Build Batch SetMsg Keyboard for Scrapers Tick UI
 def build_batch_setmsg_keyboard(bname: str) -> InlineKeyboardMarkup:
     data = load_data()
     bdata = data.get("batches", {}).get(bname, {})
-    s1 = "🟢 Set" if bdata.get("msg_id_1") else "🔴 Empty"
-    s2 = "🟢 Set" if bdata.get("msg_id_2") else "🔴 Empty"
-    s3 = "🟢 Set" if bdata.get("msg_id_3") else "🔴 Empty"
+    
+    s1 = "🟢 Configured" if bdata.get("msg_id_1") else "🔴 Empty"
+    s2 = "🟢 Configured" if bdata.get("msg_id_2") else "🔴 Empty"
+    s3 = "🟢 Configured" if bdata.get("msg_id_3") else "🔴 Empty"
+    
+    active = bdata.get("active_scraper", 1)
+    
     kb = [
-        [InlineKeyboardButton(f"🔗 Add First Link ({s1})", callback_data=f"bat_setlink1_{bname}")],
-        [InlineKeyboardButton(f"🔗 Add Second Link ({s2})", callback_data=f"bat_setlink2_{bname}")],
-        [InlineKeyboardButton(f"🔗 Add Third Link ({s3})", callback_data=f"bat_setlink3_{bname}")],
+        [
+            InlineKeyboardButton(f"{'✅' if active == 1 else '⬜'} Use 1", callback_data=f"bat_sel_1_{bname}"),
+            InlineKeyboardButton(f"⚙️ Setup Scraper 1 ({s1})", callback_data=f"bat_setlink1_{bname}")
+        ],
+        [
+            InlineKeyboardButton(f"{'✅' if active == 2 else '⬜'} Use 2", callback_data=f"bat_sel_2_{bname}"),
+            InlineKeyboardButton(f"⚙️ Setup Scraper 2 ({s2})", callback_data=f"bat_setlink2_{bname}")
+        ],
+        [
+            InlineKeyboardButton(f"{'✅' if active == 3 else '⬜'} Use 3", callback_data=f"bat_sel_3_{bname}"),
+            InlineKeyboardButton(f"⚙️ Setup Scraper 3 ({s3})", callback_data=f"bat_setlink3_{bname}")
+        ],
         [InlineKeyboardButton("🔙 Back to Batch", callback_data=f"bat_menu_{bname}")]
     ]
     return InlineKeyboardMarkup(kb)
@@ -698,7 +715,6 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
     for gid, ginfo in groups.items():
         g_bot_id = ginfo.get("bot_id")
         
-        # STRICT Bot ID matching based on sub-bots assigned in this batch ONLY
         is_valid_group = False
         if g_bot_id and str(g_bot_id) in assigned_bot_ids:
             is_valid_group = True
@@ -711,8 +727,6 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
                     break
             available_groups.append((gid, ginfo, assigned_to))
             
-    # Sorting logic: unchecked (False) comes before checked (True). (Tick wale sabse niche)
-    # Within each group, sort by last_seen descending (newest first). (Naye wale sabse upar)
     available_groups.sort(key=lambda x: (x[0] in batch_groups, -x[1].get("last_seen", 0)))
     
     kb = []
@@ -932,7 +946,7 @@ async def delete_sent_message_job(context: ContextTypes.DEFAULT_TYPE):
 
 async def execute_send(
     pyro_client: Client, chat_id_str: str, dump_chat_id: Union[int, str], 
-    msg_id_1: Optional[int], msg_id_2: Optional[int], msg_id_3: Optional[int] = None,
+    msg_id_1: Optional[int], msg_id_2: Optional[int] = None, msg_id_3: Optional[int] = None,
     auto_delete: bool = True, delete_last: bool = True, auto_pin: bool = False, 
     delete_timer: int = 0, context: ContextTypes.DEFAULT_TYPE = None, bot_token: str = BOT_TOKEN
 ) -> bool:
@@ -966,8 +980,12 @@ async def execute_send(
                 )
                 sent_msg_ids.append(m.id)
                 return m
-            except Exception as e:
-                logger.error(f"Forward error in {chat_id_str}: {e}")
+            except Exception as fe:
+                err_str = str(fe).lower()
+                logger.error(f"Forward error in {chat_id_str}: {fe}")
+                # Log but DO NOT fail the whole batch for CHANNEL_INVALID
+                if "channel_invalid" in err_str:
+                    logger.warning(f"Bot {bot_token[:10]} lacks Dump Channel access!")
                 return None
 
         if msg_id_1:
@@ -1006,9 +1024,11 @@ async def execute_send(
         return True
     
     except Exception as e:
-        if "ChatWriteForbidden" in str(e) or "UserBannedInChannel" in str(e):
+        err_lower = str(e).lower()
+        if any(err in err_lower for err in ["chatwriteforbidden", "userbannedinchannel", "peer_id_invalid", "channel_invalid"]):
             title = data.get("groups", {}).get(chat_id_str, {}).get("title", f"Unknown {chat_id_str}")
             remove_group_and_log(chat_id_str, title)
+            
         logger.error(f"Send Error in {chat_id_str}: {e}")
         return False
 
@@ -1041,7 +1061,16 @@ async def broadcast_ads(context: ContextTypes.DEFAULT_TYPE) -> tuple[int, int]:
 async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tuple[int, int]:
     data = load_data()
     bdata = data.get("batches", {}).get(bname)
-    if not bdata or not (bdata.get("msg_id_1") or bdata.get("msg_id_2") or bdata.get("msg_id_3")): return 0, 0
+    if not bdata: return 0, 0
+    
+    # NEW SCRAPER LOGIC: Send ONLY the Active Scraper Link
+    active = bdata.get("active_scraper", 1)
+    msg1, msg2, msg3 = None, None, None
+    if active == 1: msg1 = bdata.get("msg_id_1")
+    elif active == 2: msg1 = bdata.get("msg_id_2")
+    elif active == 3: msg1 = bdata.get("msg_id_3")
+
+    if not msg1: return 0, 0
         
     sent_cnt, failed_cnt = 0, 0
     settings = bdata.get("settings", {})
@@ -1050,28 +1079,27 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
     auto_pin = settings.get("auto_pin", False)
     timer = settings.get("delete_timer", 0)
     
-    # 1. STRICT ISOLATION: Get only valid Sub-Bots (Remove Main Bot token just in case)
     assigned_bots = [b for b in bdata.get("assigned_bots", []) if b != BOT_TOKEN]
     
-    for chat_id_str in bdata.get("groups", []):
+    # Safe copy to avoid dict size changing during iteration if groups get deleted
+    batch_groups = list(bdata.get("groups", []))
+    
+    for chat_id_str in batch_groups:
         if chat_id_str in data.get("groups", {}):
             ginfo = data["groups"][chat_id_str]
             g_bot_id = ginfo.get("bot_id")
             
             bot_token_to_use = None
             
-            # Match the exact sub-bot that added this group
             if g_bot_id and str(g_bot_id) != str(BOT_TOKEN.split(':')[0]):
                 for t in assigned_bots:
                     if t.startswith(str(g_bot_id)):
                         bot_token_to_use = t
                         break
             
-            # Fallback to ANY assigned sub-bot (Strictly NO MAIN BOT)
             if not bot_token_to_use and assigned_bots:
                 bot_token_to_use = random.choice(assigned_bots)
             
-            # IF NO VALID SUB-BOT FOUND, SKIP THIS GROUP.
             if not bot_token_to_use or bot_token_to_use == BOT_TOKEN:
                 failed_cnt += 1
                 bdata["stats"]["failed"] = bdata["stats"].get("failed", 0) + 1
@@ -1089,10 +1117,9 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
                 bdata["stats"]["failed"] = bdata["stats"].get("failed", 0) + 1
                 continue
 
-            # Uses strictly batch links (msg_id_1, msg_id_2, msg_id_3 from bdata)
             is_sent = await execute_send(
                 client_to_use, chat_id_str, data["dump_channel_id"], 
-                bdata.get("msg_id_1"), bdata.get("msg_id_2"), bdata.get("msg_id_3"),
+                msg1, msg2, msg3, # Here msg1 has the active scraper link
                 auto_delete=auto_del, delete_last=del_last, auto_pin=auto_pin, 
                 delete_timer=timer, context=context, bot_token=bot_token_to_use
             )
@@ -1122,6 +1149,7 @@ async def batch_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         for job in context.job_queue.get_jobs_by_name(job_name): job.schedule_removal()
         return
     await broadcast_batch(context, bname)
+
 # ==============================================================================
 # 12. USERBOTS - SPECIFIC OPERATIONS
 # ==============================================================================
@@ -2068,35 +2096,44 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_dump_set(data):
             await query.answer("❌ Pehle Dump Channel set karein!", show_alert=True)
             return ConversationHandler.END
-        await query.edit_message_text(f"⚙️ <b>Set Custom Message ({bname})</b>\n\nYahan tum 3 custom links setup kar sakte ho.", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
+        await query.edit_message_text(f"⚙️ <b>Configure Scrapers ({bname})</b>\n\nYahan tum 3 custom scrapers setup kar sakte ho aur tick (✅) karke choose kar sakte ho ki abhi kaunsa scraper message broadcast karega.", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
+        return ConversationHandler.END
+        
+    # NEW: Handle Tick Marks (✅) for Scrapers
+    if cd.startswith("bat_sel_"):
+        raw = cd.replace("bat_sel_", "", 1)
+        scraper_num, _, bname = raw.partition("_")
+        if bname in data.get("batches", {}):
+            data["batches"][bname]["active_scraper"] = int(scraper_num)
+            save_data(data)
+            await query.edit_message_reply_markup(reply_markup=build_batch_setmsg_keyboard(bname))
         return ConversationHandler.END
 
     if cd.startswith("bat_setlink1_"):
         bname = cd.replace("bat_setlink1_", "", 1)
         context.user_data['current_batch_setup'] = bname
-        await query.edit_message_text(f"👇 <b>Add First Link:</b> Batch '{bname}' ke liye Dump Channel se <b>1st Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/67)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 1))
+        await query.edit_message_text(f"👇 <b>Setup Scraper 1:</b> Batch '{bname}' ke liye Dump Channel se <b>1st Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/67)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 1))
         return BATCH_CONFIG_LINK_1
 
     if cd.startswith("bat_setlink2_"):
         bname = cd.replace("bat_setlink2_", "", 1)
         context.user_data['current_batch_setup'] = bname
-        await query.edit_message_text(f"👇 <b>Add Second Link:</b> Batch '{bname}' ke liye Dump Channel se <b>2nd Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/68)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 2))
+        await query.edit_message_text(f"👇 <b>Setup Scraper 2:</b> Batch '{bname}' ke liye Dump Channel se <b>2nd Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/68)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 2))
         return BATCH_CONFIG_LINK_2
         
     if cd.startswith("bat_setlink3_"):
         bname = cd.replace("bat_setlink3_", "", 1)
         context.user_data['current_batch_setup'] = bname
-        await query.edit_message_text(f"👇 <b>Add Third Link:</b> Batch '{bname}' ke liye Dump Channel se <b>3rd Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/69)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 3))
+        await query.edit_message_text(f"👇 <b>Setup Scraper 3:</b> Batch '{bname}' ke liye Dump Channel se <b>3rd Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/69)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 3))
         return BATCH_CONFIG_LINK_3
 
-    # --- NEW: Delete Link Action handler directly from Inline Buttons ---
     if cd.startswith("bat_dellink_"):
         raw_cd = cd.replace("bat_dellink_", "", 1)
         link_num, _, bname = raw_cd.partition("_")
         if bname in data.get("batches", {}):
             data["batches"][bname][f"msg_id_{link_num}"] = None
             save_data(data)
-            await query.edit_message_text(f"✅ Link {link_num} for Batch '{bname}' has been successfully deleted/removed!", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
+            await query.edit_message_text(f"✅ Scraper {link_num} for Batch '{bname}' has been successfully cleared!", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
         return ConversationHandler.END
 
     if cd.startswith("bat_usesaved_"):
@@ -2113,7 +2150,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data["batches"][bname]["msg_id_2"] = ad.get("msg_id_2")
             data["batches"][bname]["buttons"] = ad.get("buttons", [])
             
-            # Note: 3rd msg wasn't historically in saved ads, but setting it safely
             data["batches"][bname]["msg_id_3"] = ad.get("msg_id_3", None)
             
             if ad.get("bot_token") and ad.get("bot_token") not in data["batches"][bname].setdefault("assigned_bots", []):
@@ -2665,7 +2701,7 @@ async def handle_wait_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = load_data()
         if bname not in data["batches"]:
             data["batches"][bname] = {
-                "groups": [], "msg_id_1": None, "msg_id_2": None, "msg_id_3": None, "buttons": [], 
+                "groups": [], "msg_id_1": None, "msg_id_2": None, "msg_id_3": None, "active_scraper": 1, "buttons": [], 
                 "settings": {"auto_broadcast": False, "auto_delete": True, "delete_last": True, "auto_pin": False, "delay": 30, "delete_timer": 0, "link_to_global": False}, 
                 "stats": {"sent": 0, "failed": 0}, "assigned_bots": []
             }
@@ -2741,7 +2777,7 @@ async def batch_config_link_1(update: Update, context: ContextTypes.DEFAULT_TYPE
         data["batches"][bname]["msg_id_1"] = msg_id
         
     save_data(data)
-    await update.effective_message.reply_text("✅ <b>Link 1 Updated!</b>", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
+    await update.effective_message.reply_text("✅ <b>Scraper 1 Updated!</b>", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
     return ConversationHandler.END
 
 async def batch_config_link_2(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2759,7 +2795,7 @@ async def batch_config_link_2(update: Update, context: ContextTypes.DEFAULT_TYPE
         data["batches"][bname]["msg_id_2"] = msg_id
         
     save_data(data)
-    await update.effective_message.reply_text("✅ <b>Link 2 Updated!</b>", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
+    await update.effective_message.reply_text("✅ <b>Scraper 2 Updated!</b>", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
     return ConversationHandler.END
     
 async def batch_config_link_3(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2777,7 +2813,7 @@ async def batch_config_link_3(update: Update, context: ContextTypes.DEFAULT_TYPE
         data["batches"][bname]["msg_id_3"] = msg_id
         
     save_data(data)
-    await update.effective_message.reply_text("✅ <b>Link 3 Updated!</b>", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
+    await update.effective_message.reply_text("✅ <b>Scraper 3 Updated!</b>", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
     return ConversationHandler.END
 
 # Legacy button handlers
@@ -3149,7 +3185,6 @@ def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).post_stop(post_stop).build()
 
     conv = ConversationHandler(
-        # Note: Allowed matching 'bat_dellink_' in callback query patterns
         entry_points=[CallbackQueryHandler(callback_handler, pattern="^(?!(color_|sbcol_|confirm_broadcast|cancel_broadcast|cancel_state)).*$")],
         states={
             SET_DUMP_CHANNEL: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_set_dump_channel)],
@@ -3214,7 +3249,6 @@ def main():
             POSTER_BTN_LINK: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, poster_receive_btn_link)],
             POSTER_BTN_COLOR: [CallbackQueryHandler(poster_receive_btn_color, pattern="^color_")],
             
-            # New specific bot token inputs
             BATCH_ADDBOT_TOKEN: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_batch_addbot_token)],
             BATCH_ADDBOT_NAME: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_batch_addbot_name)],
         },
@@ -3238,6 +3272,8 @@ def main():
     print("\n[+] Advanced Bot Architecture Initialized Successfully.")
     print("[+] Dump Channel Native Forward Routing Protocol Active.")
     print("[+] Sub-Bot Strict Priority Broadcast System Active...")
+    print("[+] Multiple Scraper Logic (Tick System) Loaded.")
+    print("[+] 0-Member / Cache Delete Exception Handler Active.")
     print("[+] Link Deletion UI Feature Loaded.")
     print("[+] Auto-Restore Core Module & Logger Services Validated.\n")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
