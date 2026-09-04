@@ -11,7 +11,8 @@
 # FIXED: Cache/0-member Group Deletion & CHANNEL_INVALID Forward Exceptions.
 # FIXED: Bot Sub-Menu UI and Deletion functionality.
 # FIXED: Strict Bot Isolation in Batch Add/Remove Groups Menu.
-# FIXED: JobQueue completely removed! Native Asyncio Background Scheduler implemented.
+# FIXED: Native Asyncio Background Scheduler implemented cleanly without JobQueue.
+# FIXED: Event Loop Closed & Pending Tasks Crash Handled completely.
 # NEW: Dedicated Auto-Broadcast Menu in Batches & Global Link Behavior.
 # ==============================================================================
 
@@ -374,7 +375,7 @@ async def stop_userbot_listener(ub_id: str) -> None:
         except Exception as e:
             logger.error(f"Error stopping userbot listener: {e}")
 
-async def auto_refresh_userbots_job(context: ContextTypes.DEFAULT_TYPE):
+async def auto_refresh_userbots_job(context: ContextTypes.DEFAULT_TYPE = None):
     data = load_data()
     changed = False
     for ub_id, info in data.get("userbots", {}).items():
@@ -960,7 +961,8 @@ async def track_bot_chat_status(update: Update, context: ContextTypes.DEFAULT_TY
 GLOBAL_TASKS = {
     "ads_job": None,
     "batch_jobs": {},
-    "refresh_job": None
+    "refresh_job": None,
+    "delete_jobs": set()
 }
 
 def remove_ads_jobs(context: ContextTypes.DEFAULT_TYPE = None) -> None:
@@ -978,14 +980,20 @@ def schedule_ads_job(context: ContextTypes.DEFAULT_TYPE = None, first: int = Non
     next_delay = first if first is not None else parse_delay(delay_val)
     
     async def run_ads_loop():
-        if next_delay > 0:
-            await asyncio.sleep(next_delay)
-        while True:
-            current_data = load_data()
-            if not current_data.get("started"): break
-            await broadcast_ads(context)
-            d_val = load_data().get("delay", 30)
-            await asyncio.sleep(parse_delay(d_val))
+        try:
+            if next_delay > 0:
+                await asyncio.sleep(next_delay)
+            while True:
+                current_data = load_data()
+                if not current_data.get("started"): break
+                try:
+                    await broadcast_ads(context)
+                except Exception as e:
+                    logger.error(f"Global Ads broadcast error: {e}")
+                d_val = load_data().get("delay", 30)
+                await asyncio.sleep(parse_delay(d_val))
+        except asyncio.CancelledError:
+            pass
 
     GLOBAL_TASKS["ads_job"] = asyncio.create_task(run_ads_loop())
 
@@ -1002,24 +1010,29 @@ def manage_batch_job(context: ContextTypes.DEFAULT_TYPE, bname: str, start: bool
             next_delay = parse_delay(delay_val)
             
             async def run_batch_loop():
-                if next_delay > 0:
-                    await asyncio.sleep(next_delay)
-                while True:
-                    b_data = load_data().get("batches", {}).get(bname)
-                    if not b_data or not b_data["settings"].get("auto_broadcast"): break
-                    if not b_data["settings"].get("link_to_global", False):
-                        try:
-                            await broadcast_batch(context, bname)
-                        except Exception as broadcast_err:
-                            logger.error(f"Broadcast failure in batch {bname}: {broadcast_err}")
-                    bd_val = load_data().get("batches", {}).get(bname, {})["settings"].get("delay", 30)
-                    await asyncio.sleep(parse_delay(bd_val))
+                try:
+                    if next_delay > 0:
+                        await asyncio.sleep(next_delay)
+                    while True:
+                        b_data = load_data().get("batches", {}).get(bname)
+                        if not b_data or not b_data["settings"].get("auto_broadcast"): break
+                        if not b_data["settings"].get("link_to_global", False):
+                            try:
+                                await broadcast_batch(context, bname)
+                            except Exception as broadcast_err:
+                                logger.error(f"Broadcast failure in batch {bname}: {broadcast_err}")
+                        bd_val = load_data().get("batches", {}).get(bname, {})["settings"].get("delay", 30)
+                        await asyncio.sleep(parse_delay(bd_val))
+                except asyncio.CancelledError:
+                    pass
 
             GLOBAL_TASKS["batch_jobs"][bname] = asyncio.create_task(run_batch_loop())
 
 async def delete_sent_message_async(bot_token: str, chat_id: int, msg_id: int, delay: int):
-    await asyncio.sleep(delay)
+    current_task = asyncio.current_task()
+    GLOBAL_TASKS["delete_jobs"].add(current_task)
     try:
+        await asyncio.sleep(delay)
         client = main_pyro_client if bot_token == BOT_TOKEN else sub_bot_clients.get(bot_token)
         if client:
             await client.delete_messages(chat_id=chat_id, message_ids=msg_id)
@@ -1033,13 +1046,21 @@ async def delete_sent_message_async(bot_token: str, chat_id: int, msg_id: int, d
                 elif item == msg_id:
                     history_list.remove(msg_id)
             save_data(data)
-    except Exception: pass
+    except asyncio.CancelledError:
+        pass
+    except Exception: 
+        pass
+    finally:
+        GLOBAL_TASKS["delete_jobs"].discard(current_task)
     
 async def auto_refresh_loop():
-    await asyncio.sleep(3600)
-    while True:
-        await auto_refresh_userbots_job(None)
-        await asyncio.sleep(9 * 3600)
+    try:
+        await asyncio.sleep(3600)
+        while True:
+            await auto_refresh_userbots_job(None)
+            await asyncio.sleep(9 * 3600)
+    except asyncio.CancelledError:
+        pass
 
 # ==============================================================================
 # 11. CORE BROADCAST EXECUTION ENGINE 
@@ -1616,7 +1637,7 @@ async def run_userbot_add_admin(update: Update, context: ContextTypes.DEFAULT_TY
         await reply.edit_text(f"❌ Error during Add Admin task: {e}", reply_markup=userbot_single_keyboard(ub_id))
     return ConversationHandler.END
 
-# --- PART 1 END ---
+# --- END OF PART 1 ---
 # ==============================================================================
 # 13. MAIN COMMAND HANDLERS
 # ==============================================================================
@@ -3296,7 +3317,20 @@ async def post_init(application: Application) -> None:
             logger.error(f"Failed to prep restart backup: {e}")
 
 async def post_stop(application: Application) -> None:
-    logger.info("Gracefully shutting down all pyrogram clients...")
+    logger.info("Gracefully shutting down all pyrogram clients and tasks...")
+    
+    # Cancel all native asyncio tasks cleanly
+    if GLOBAL_TASKS.get("ads_job") and not GLOBAL_TASKS["ads_job"].done():
+        GLOBAL_TASKS["ads_job"].cancel()
+        
+    for bname, task in GLOBAL_TASKS.get("batch_jobs", {}).items():
+        if task and not task.done():
+            task.cancel()
+            
+    for task in list(GLOBAL_TASKS.get("delete_jobs", [])):
+        if task and not task.done():
+            task.cancel()
+    
     if main_pyro_client:
         try:
             await main_pyro_client.stop()
@@ -3307,6 +3341,7 @@ async def post_stop(application: Application) -> None:
             await client.stop()
         except Exception:
             pass
+            
     for token, client in list(sub_bot_clients.items()):
         try:
             await client.stop()
@@ -3413,6 +3448,7 @@ def main():
     print("[+] 0-Member / Cache Delete Exception Handler Active.")
     print("[+] Link Deletion UI Feature Loaded.")
     print("[+] Native Asyncio Engine Loaded (JobQueue Disabled).")
+    print("[+] Pending Tasks Crash Handler Fixed (Safe Stop).")
     print("[+] Auto-Restore Core Module & Logger Services Validated.")
     print("[+] Random Intervals & Global Priority Override Enabled.\n")
     
