@@ -11,7 +11,8 @@
 # FIXED: Cache/0-member Group Deletion & CHANNEL_INVALID Forward Exceptions.
 # FIXED: Bot Sub-Menu UI and Deletion functionality.
 # FIXED: Strict Bot Isolation in Batch Add/Remove Groups Menu.
-# FIXED: Auto-Broadcast Job Persistence and Timer Execution.
+# FIXED: Auto-Broadcast Job Persistence and Timer Execution with Random Delays.
+# NEW: Dedicated Auto-Broadcast Menu in Batches & Global Link Behavior.
 # ==============================================================================
 
 import json
@@ -123,7 +124,7 @@ BUTTON_COLOR_STYLES = {
 DEFAULT_DATA = {
     "configured": False,
     "started": False,
-    "delay": 30,
+    "delay": 30, # Can now be an integer or string like "60-120"
     "delete_timer": 0,
     "auto_reply": True,
     "total_broadcasts_sent": 0, 
@@ -152,6 +153,19 @@ DEFAULT_DATA = {
 }
 
 main_pyro_client = None
+
+# Helpers for Random Delay Parsing
+def parse_delay(delay_val) -> int:
+    if isinstance(delay_val, str) and "-" in delay_val:
+        try:
+            parts = delay_val.split("-")
+            return random.randint(int(parts[0].strip()), int(parts[1].strip()))
+        except:
+            return 30
+    try:
+        return int(delay_val)
+    except:
+        return 30
 
 # ==============================================================================
 # 3. DATABASE (MONGODB / JSON) CONNECTION & HELPERS
@@ -626,7 +640,13 @@ def build_batches_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     end_idx = start_idx + ITEMS_PER_PAGE
     
     for bname, bdata in batches[start_idx:end_idx]:
-        status = "🟢" if bdata["settings"].get("auto_broadcast") else "🔴"
+        # Handle Auto Broadcast display indicator gracefully if linked to global
+        is_linked = bdata.get("settings", {}).get("link_to_global", False)
+        if is_linked:
+            status = "🌐"
+        else:
+            status = "🟢" if bdata.get("settings", {}).get("auto_broadcast") else "🔴"
+            
         bot_assigned = "🤖" if bdata.get("assigned_bots") else ""
         kb.append([InlineKeyboardButton(f"{status} 🗂️ {bname[:15]} ({len(bdata['groups'])} Chats) {bot_assigned}", callback_data=f"bat_menu_{bname}")])
         
@@ -644,27 +664,47 @@ def build_single_batch_keyboard(bname: str) -> InlineKeyboardMarkup:
     data = load_data()
     bdata = data.get("batches", {}).get(bname, {})
     s = bdata.get("settings", {})
-    is_msg_set = "🟢 Configured" if bdata.get("msg_id_1") or bdata.get("msg_id_2") or bdata.get("msg_id_3") else "🔴 Not Configured"
-    bcast_txt = "🟢 Auto Broadcast: ON" if s.get("auto_broadcast") else "🔴 Auto Broadcast: OFF"
-    del_txt = f"🟢 Auto-Delete: {s.get('delete_timer', 0)}s" if s.get("auto_delete") else "🔴 Auto-Delete: OFF"
-    del_last_txt = "🟢 Delete Last Msg: ON" if s.get("delete_last", True) else "🔴 Delete Last Msg: OFF"
-    pin_txt = "🟢 Auto-Pin: ON" if s.get("auto_pin") else "🔴 Auto-Pin: OFF"
     global_txt = "🌐 Linked to Global: ON" if s.get("link_to_global", False) else "🌐 Linked to Global: OFF"
 
+    # Upgraded: We removed Auto-Broadcast, Pin, Delete, Bulk Delete etc from here and moved them to Auto Broadcast Menu.
     kb = [
         [InlineKeyboardButton("📊 Get Full Info (To Logger)", callback_data=f"bat_fullinfo_{bname}")],
         [InlineKeyboardButton("📢 Set Batch Dump Channel", callback_data=f"bat_setdump_{bname}")],
         [InlineKeyboardButton("👥 Add/Remove Chats", callback_data=f"bat_edit_{bname}=0")],
         [InlineKeyboardButton("🤖 Manage Bots", callback_data=f"bat_managebots_{bname}")],
         [InlineKeyboardButton("⚙️ Configure Scrapers (Custom Msg)", callback_data=f"bat_setmsgmenu_{bname}")],
-        [InlineKeyboardButton("📂 Use Saved Ad", callback_data=f"bat_usesaved_{bname}"), InlineKeyboardButton("🧹 Bulk Delete Msgs", callback_data=f"bat_delmsg_{bname}")],
-        [InlineKeyboardButton(bcast_txt, callback_data=f"bat_tog_bcast_{bname}")],
-        [InlineKeyboardButton(del_last_txt, callback_data=f"bat_tog_dellast_{bname}"), InlineKeyboardButton(del_txt, callback_data=f"bat_tog_del_{bname}")],
-        [InlineKeyboardButton(pin_txt, callback_data=f"bat_tog_pin_{bname}"), InlineKeyboardButton(global_txt, callback_data=f"bat_tog_global_{bname}")],
-        [InlineKeyboardButton(f"⏱ Delay: {s.get('delay', 30)}s", callback_data=f"bat_delay_{bname}"), InlineKeyboardButton("📢 Send ONCE", callback_data=f"bat_send_{bname}")],
+        [InlineKeyboardButton("📂 Use Saved Ad", callback_data=f"bat_usesaved_{bname}")],
+        [InlineKeyboardButton("🚀 Auto Broadcast Menu", callback_data=f"bat_autobcast_menu_{bname}")],
+        [InlineKeyboardButton(global_txt, callback_data=f"bat_tog_global_{bname}"), InlineKeyboardButton("📢 Send ONCE", callback_data=f"bat_send_{bname}")],
         [InlineKeyboardButton("🗑️ Delete Batch", callback_data=f"bat_del_ask_{bname}")],
         [InlineKeyboardButton("🔙 Back to Batches", callback_data="groups_batches_menu")]
     ]
+    return InlineKeyboardMarkup(kb)
+
+def build_batch_autobcast_keyboard(bname: str) -> InlineKeyboardMarkup:
+    data = load_data()
+    bdata = data.get("batches", {}).get(bname, {})
+    s = bdata.get("settings", {})
+    is_global = s.get("link_to_global", False)
+    
+    bcast_txt = "🟢 Auto Broadcast: ON (Start)" if s.get("auto_broadcast") else "🔴 Auto Broadcast: OFF (Stop)"
+    del_txt = f"🟢 Auto-Delete Timer: {s.get('delete_timer', 0)}s" if s.get("auto_delete") else "🔴 Auto-Delete: OFF"
+    del_last_txt = "🟢 Delete Last Msg: ON" if s.get("delete_last", True) else "🔴 Delete Last Msg: OFF"
+    pin_txt = "🟢 Auto-Pin: ON" if s.get("auto_pin") else "🔴 Auto-Pin: OFF"
+    
+    kb = []
+    
+    # If linked to global, Timer and Start/Stop is hidden from batch.
+    if not is_global:
+        kb.append([InlineKeyboardButton(bcast_txt, callback_data=f"bat_tog_bcast_{bname}")])
+        kb.append([InlineKeyboardButton(f"⏱ Set Delay: {s.get('delay', 30)}s", callback_data=f"bat_delay_{bname}")])
+    else:
+        kb.append([InlineKeyboardButton("🌐 Controlled by Global Timer & Switch", callback_data="dummy")])
+        
+    kb.append([InlineKeyboardButton(del_last_txt, callback_data=f"bat_tog_dellast_{bname}"), InlineKeyboardButton(del_txt, callback_data=f"bat_tog_del_{bname}")])
+    kb.append([InlineKeyboardButton(pin_txt, callback_data=f"bat_tog_pin_{bname}")])
+    kb.append([InlineKeyboardButton("🧹 Bulk Delete All Old Msgs", callback_data=f"bat_delmsg_{bname}")])
+    kb.append([InlineKeyboardButton("🔙 Back to Batch", callback_data=f"bat_menu_{bname}")])
     return InlineKeyboardMarkup(kb)
 
 def build_batch_managebots_keyboard(bname: str) -> InlineKeyboardMarkup:
@@ -726,7 +766,6 @@ def build_batch_usesaved_keyboard(bname: str) -> InlineKeyboardMarkup:
     kb.append([InlineKeyboardButton("🔙 Cancel", callback_data=f"bat_menu_{bname}")])
     return InlineKeyboardMarkup(kb)
 
-# --- STRICT BOT ISOLATION FIX APPLIED HERE ---
 def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup:
     data = load_data()
     groups = data.get("groups", {})
@@ -736,14 +775,12 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
     assigned_bots = bdata.get("assigned_bots", [])
     main_bot_id = BOT_TOKEN.split(':')[0]
     
-    # Extract prefix IDs for active bot isolation. If no bots assigned, default to main bot groups.
     assigned_bot_ids = [t.split(':')[0] for t in assigned_bots] if assigned_bots else [main_bot_id]
 
     available_groups = []
     for gid, ginfo in groups.items():
         g_bot_id = str(ginfo.get("bot_id", main_bot_id))
         
-        # STRICT ISOLATION FILTER: Skip groups not assigned to this batch's bots
         if g_bot_id not in assigned_bot_ids:
             continue
             
@@ -781,6 +818,7 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
     if nav: kb.append(nav)
     kb.append([InlineKeyboardButton("🔙 Done", callback_data=f"bat_menu_{bname}")])
     return InlineKeyboardMarkup(kb)
+
 def build_date_stats_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     data = load_data()
     groups = data.get("groups", {})
@@ -920,7 +958,7 @@ async def track_bot_chat_status(update: Update, context: ContextTypes.DEFAULT_TY
         await send_to_logger(f"🛑 <b>Bot removed/banned from chat!</b>\n\n<b>Title:</b> {chat.title}")
 
 # ==============================================================================
-# 10. BACKGROUND SCHEDULING (Broadcasting Cycles)
+# 10. BACKGROUND SCHEDULING (Broadcasting Cycles) - UPGRADED TO DYNAMIC RUN_ONCE
 # ==============================================================================
 
 def remove_ads_jobs(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -931,12 +969,11 @@ def schedule_ads_job(context: ContextTypes.DEFAULT_TYPE, first: int = None) -> N
     if not context.job_queue: return
     data = load_data()
     if not data.get("started") or not data.get("configured") or not has_ad_config(data): return
-    delay = max(1, int(data.get("delay", 30)))
-    if first is None: first = delay
+    delay_val = data.get("delay", 30)
+    next_delay = first if first is not None else parse_delay(delay_val)
     remove_ads_jobs(context)
-    context.job_queue.run_repeating(ads_cycle_job, interval=delay, first=first, name=ADS_JOB_NAME)
+    context.job_queue.run_once(ads_cycle_job, next_delay, name=ADS_JOB_NAME)
 
-# --- STRICT AUTO-BROADCAST JOB FIX APPLIED HERE ---
 def manage_batch_job(context: ContextTypes.DEFAULT_TYPE, bname: str, start: bool) -> None:
     if not context.job_queue: return
     job_name = f"batch_job_{bname}"
@@ -944,11 +981,10 @@ def manage_batch_job(context: ContextTypes.DEFAULT_TYPE, bname: str, start: bool
     if start:
         data = load_data()
         bdata = data.get("batches", {}).get(bname)
-        # Fix: Removed strict message requirement here to allow seamless scheduling. 
-        # Execution is checked inside `batch_cycle_job` instead to prevent pausing if active scraper changes.
         if bdata:
-            delay = max(1, int(bdata["settings"].get("delay", 30)))
-            context.job_queue.run_repeating(batch_cycle_job, interval=delay, first=0, data=bname, name=job_name)
+            delay_val = bdata["settings"].get("delay", 30)
+            next_delay = parse_delay(delay_val)
+            context.job_queue.run_once(batch_cycle_job, 0, data=bname, name=job_name)
 
 async def delete_sent_message_job(context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -986,7 +1022,6 @@ async def execute_send(
     except:
         return False
 
-    # --- DELETE LAST MESSAGE ROBUSTNESS FIX ---
     last_msg_ids = data.get("last_sent_msg_id", {}).get(chat_id_str)
     if delete_last and last_msg_ids:
         if isinstance(last_msg_ids, list):
@@ -1186,10 +1221,16 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
 
 async def ads_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     data = load_data()
-    if not data.get("started") or not data.get("configured") or not has_ad_config(data):
+    if not data.get("started"):
         remove_ads_jobs(context)
         return
     await broadcast_ads(context)
+    
+    # Reschedule with updated delay (can be random)
+    if load_data().get("started"):
+        delay_val = load_data().get("delay", 30)
+        next_delay = parse_delay(delay_val)
+        context.job_queue.run_once(ads_cycle_job, next_delay, name=ADS_JOB_NAME)
 
 async def batch_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     bname = context.job.data
@@ -1199,7 +1240,18 @@ async def batch_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         job_name = f"batch_job_{bname}"
         for job in context.job_queue.get_jobs_by_name(job_name): job.schedule_removal()
         return
-    await broadcast_batch(context, bname)
+        
+    # Global broadcast triggers linked batches natively, so avoid double run here.
+    if not bdata["settings"].get("link_to_global", False):
+        await broadcast_batch(context, bname)
+    
+    # Reschedule recursively 
+    refreshed_data = load_data()
+    refreshed_bdata = refreshed_data.get("batches", {}).get(bname)
+    if refreshed_bdata and refreshed_bdata["settings"].get("auto_broadcast"):
+        delay_val = refreshed_bdata["settings"].get("delay", 30)
+        next_delay = parse_delay(delay_val)
+        context.job_queue.run_once(batch_cycle_job, next_delay, data=bname, name=f"batch_job_{bname}")
 
 # ==============================================================================
 # 12. USERBOTS - SPECIFIC OPERATIONS
@@ -1598,7 +1650,6 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not user or not is_owner(user.id): return
     await remember_user(update)
     await update.message.reply_text("Admin Menu 👑", reply_markup=admin_keyboard())
-
 # ==============================================================================
 # 14. CALLBACK QUERY HANDLERS (The Brain of the UI)
 # ==============================================================================
@@ -2047,6 +2098,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(txt, reply_markup=build_single_batch_keyboard(bname), parse_mode="HTML")
         return ConversationHandler.END
 
+    # --- NEW AUTO BROADCAST MENU FOR BATCHES ---
+    if cd.startswith("bat_autobcast_menu_"):
+        bname = cd.replace("bat_autobcast_menu_", "", 1)
+        bdata = data.get("batches", {}).get(bname)
+        if not bdata: return ConversationHandler.END
+        txt = f"🚀 <b>Auto Broadcast Menu for Batch: {bname}</b>\n\nYahan tum is batch ke Auto Broadcast ki setting kar sakte ho (Start/Stop, Timers, Deletions)."
+        await query.edit_message_text(txt, reply_markup=build_batch_autobcast_keyboard(bname), parse_mode="HTML")
+        return ConversationHandler.END
+
     if cd.startswith("bat_setdump_"):
         bname = cd.replace("bat_setdump_", "", 1)
         context.user_data['current_batch_setup'] = bname
@@ -2244,7 +2304,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["batches"][bname]["settings"]["auto_broadcast"] = not state
         save_data(data)
         manage_batch_job(context, bname, not state)
-        await query.edit_message_reply_markup(reply_markup=build_single_batch_keyboard(bname))
+        await query.edit_message_reply_markup(reply_markup=build_batch_autobcast_keyboard(bname))
         return ConversationHandler.END
 
     if cd.startswith("bat_tog_dellast_"):
@@ -2252,7 +2312,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = data["batches"][bname]["settings"].get("delete_last", True)
         data["batches"][bname]["settings"]["delete_last"] = not state
         save_data(data)
-        await query.edit_message_reply_markup(reply_markup=build_single_batch_keyboard(bname))
+        await query.edit_message_reply_markup(reply_markup=build_batch_autobcast_keyboard(bname))
         return ConversationHandler.END
 
     if cd.startswith("bat_tog_global_"):
@@ -2260,6 +2320,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = data["batches"][bname]["settings"].get("link_to_global", False)
         data["batches"][bname]["settings"]["link_to_global"] = not state
         save_data(data)
+        # If toggled globally, refresh the main batch keyboard.
         await query.edit_message_reply_markup(reply_markup=build_single_batch_keyboard(bname))
         return ConversationHandler.END
 
@@ -2273,7 +2334,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             data["batches"][bname]["settings"]["auto_delete"] = False
             save_data(data)
-            await query.edit_message_reply_markup(reply_markup=build_single_batch_keyboard(bname))
+            await query.edit_message_reply_markup(reply_markup=build_batch_autobcast_keyboard(bname))
             return ConversationHandler.END
 
     if cd.startswith("bat_tog_pin_"):
@@ -2281,13 +2342,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = data["batches"][bname]["settings"]["auto_pin"]
         data["batches"][bname]["settings"]["auto_pin"] = not state
         save_data(data)
-        await query.edit_message_reply_markup(reply_markup=build_single_batch_keyboard(bname))
+        await query.edit_message_reply_markup(reply_markup=build_batch_autobcast_keyboard(bname))
         return ConversationHandler.END
         
     if cd.startswith("bat_delay_"):
         bname = cd.replace("bat_delay_", "", 1)
         context.user_data['current_batch_setup'] = bname
-        await query.edit_message_text("⏱ Send new loop delay for this batch in seconds (e.g. 60):", parse_mode="HTML", reply_markup=cancel_keyboard())
+        await query.edit_message_text("⏱ Send new loop delay for this batch in seconds. (e.g., 60, or 60-120 for random):", parse_mode="HTML", reply_markup=cancel_keyboard())
         return BATCH_CHANGE_DELAY
 
     if cd.startswith("bat_del_ask_"):
@@ -2350,7 +2411,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CONFIG_AD_LINK_1
         
     if cd == "change_delay":
-        await query.edit_message_text("Send new loop delay in seconds. Example: 30", parse_mode="HTML", reply_markup=cancel_keyboard())
+        await query.edit_message_text("Send new loop delay in seconds. Example: 30 or 60-120 (for random)", parse_mode="HTML", reply_markup=cancel_keyboard())
         return CHANGE_DELAY
         
     if cd == "change_del_timer":
@@ -2839,7 +2900,7 @@ async def receive_batch_delete_n(update: Update, context: ContextTypes.DEFAULT_T
         del_c, fail_c = 0, len(bdata.get("groups", []))
         
     save_data(data)
-    await msg_reply.edit_text(f"✅ Bulk Deletion complete for batch '{bname}'.\n\n🗑️ Successfully Deleted: {del_c}\n❌ Failed/Missing: {fail_c}", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
+    await msg_reply.edit_text(f"✅ Bulk Deletion complete for batch '{bname}'.\n\n🗑️ Successfully Deleted: {del_c}\n❌ Failed/Missing: {fail_c}", parse_mode="HTML", reply_markup=build_batch_autobcast_keyboard(bname))
     return ConversationHandler.END
 
 # ----------------- BATCH LINK CONFIGURATION -----------------
@@ -2910,18 +2971,17 @@ async def batch_config_receive_delete_timer(update: Update, context: ContextType
     data = load_data()
     data["batches"][bname]["settings"]["delete_timer"] = max(0, timer)
     save_data(data)
-    await update.effective_message.reply_text("✅ Batch configuration complete!", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
+    await update.effective_message.reply_text("✅ Batch configuration complete!", parse_mode="HTML", reply_markup=build_batch_autobcast_keyboard(bname))
     return ConversationHandler.END
 
 async def receive_batch_delay(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try: delay = int(update.effective_message.text.strip())
-    except: return BATCH_CHANGE_DELAY
+    delay_str = update.effective_message.text.strip()
     bname = context.user_data.get('current_batch_setup')
     data = load_data()
-    data["batches"][bname]["settings"]["delay"] = delay
+    data["batches"][bname]["settings"]["delay"] = delay_str
     save_data(data)
     if data["batches"][bname]["settings"]["auto_broadcast"]: manage_batch_job(context, bname, True)
-    await update.effective_message.reply_text(f"Delay for {bname} updated ✅", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
+    await update.effective_message.reply_text(f"Delay for {bname} updated ✅", parse_mode="HTML", reply_markup=build_batch_autobcast_keyboard(bname))
     return ConversationHandler.END
 
 async def receive_batch_tog_del_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2932,7 +2992,7 @@ async def receive_batch_tog_del_timer(update: Update, context: ContextTypes.DEFA
     data["batches"][bname]["settings"]["auto_delete"] = True
     data["batches"][bname]["settings"]["delete_timer"] = max(0, timer)
     save_data(data)
-    await update.effective_message.reply_text(f"Auto-Delete Set to {timer}s ✅", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
+    await update.effective_message.reply_text(f"Auto-Delete Set to {timer}s ✅", parse_mode="HTML", reply_markup=build_batch_autobcast_keyboard(bname))
     return ConversationHandler.END
 
 # ----------------- SAVED AD LINK CONFIGURATION -----------------
@@ -3017,24 +3077,22 @@ async def config_receive_delete_timer(update: Update, context: ContextTypes.DEFA
     data = load_data()
     data["delete_timer"] = max(0, timer)
     save_data(data)
-    await update.effective_message.reply_text("✅ Delete Timer saved!\n\n🔄 <b>Step 4:</b> Send Loop Broadcast Delay in seconds (e.g., 30).", parse_mode="HTML", reply_markup=cancel_keyboard())
+    await update.effective_message.reply_text("✅ Delete Timer saved!\n\n🔄 <b>Step 4:</b> Send Loop Broadcast Delay in seconds (e.g., 30 or 60-120).", parse_mode="HTML", reply_markup=cancel_keyboard())
     return CONFIG_DELAY
 
 async def config_receive_delay(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try: delay = int(update.effective_message.text.strip())
-    except: return CONFIG_DELAY
+    delay_str = update.effective_message.text.strip()
     data = load_data()
-    data["delay"] = delay
+    data["delay"] = delay_str
     data["configured"] = True
     save_data(data)
     await update.effective_message.reply_text("✅ Configuration complete!\n\nAdmin Menu 👑", parse_mode="HTML", reply_markup=admin_keyboard())
     return ConversationHandler.END
 
 async def receive_change_delay(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try: delay = int(update.effective_message.text.strip())
-    except: return CHANGE_DELAY
+    delay_str = update.effective_message.text.strip()
     data = load_data()
-    data["delay"] = delay
+    data["delay"] = delay_str
     save_data(data)
     if data.get("started"): schedule_ads_job(context)
     await update.effective_message.reply_text("✅ Delay changed!", parse_mode="HTML", reply_markup=admin_keyboard())
@@ -3198,7 +3256,6 @@ async def send_restart_auto_backup(token: str, chat_id: int, count: int, session
     except Exception as e:
         logger.error(f"Logger Restart Backup Error: {e}")
 
-# --- STRICT INITIALIZATION FIX APPLIED HERE ---
 async def post_init(application: Application) -> None:
     data = load_data()
     
@@ -3209,14 +3266,15 @@ async def post_init(application: Application) -> None:
     
     if application.job_queue:
         if data.get("started") and data.get("configured") and has_ad_config(data):
-            delay = max(1, int(data.get("delay", 30)))
-            application.job_queue.run_repeating(ads_cycle_job, interval=delay, first=delay, name=ADS_JOB_NAME)
+            next_delay = parse_delay(data.get("delay", 30))
+            application.job_queue.run_once(ads_cycle_job, next_delay, name=ADS_JOB_NAME)
             
         for bname, bdata in data.get("batches", {}).items():
-            # Fix: Always restart the job loop if auto_broadcast is True (removed strict msg presence check)
-            if bdata.get("settings", {}).get("auto_broadcast"):
-                delay = max(1, int(bdata["settings"].get("delay", 30)))
-                application.job_queue.run_repeating(batch_cycle_job, interval=delay, first=delay, data=bname, name=f"batch_job_{bname}")
+            # Agar batch global se linked nahi hai aur auto broadcast on hai tabhi start kare
+            is_global = bdata.get("settings", {}).get("link_to_global", False)
+            if bdata.get("settings", {}).get("auto_broadcast") and not is_global:
+                next_delay = parse_delay(bdata["settings"].get("delay", 30))
+                application.job_queue.run_once(batch_cycle_job, next_delay, data=bname, name=f"batch_job_{bname}")
 
         for token, info in data.get("sub_bots", {}).items():
             application.create_task(start_subbot_listener(token, info["name"]))
@@ -3360,8 +3418,11 @@ def main():
     print("[+] Multiple Scraper Logic (Tick System) Loaded.")
     print("[+] 0-Member / Cache Delete Exception Handler Active.")
     print("[+] Link Deletion UI Feature Loaded.")
-    print("[+] Auto-Restore Core Module & Logger Services Validated.\n")
+    print("[+] Auto-Restore Core Module & Logger Services Validated.")
+    print("[+] Random Intervals & Global Priority Override Enabled.\n")
+    
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
+
