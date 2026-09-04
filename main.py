@@ -5,6 +5,7 @@
 # UPGRADED: Direct unlimited bot tokens inside batches.
 # UPGRADED: Smart Chat Sorting (New First, Ticked Last).
 # UPGRADED: Strict Bot Isolation in Broadcast & Delete Link UI Buttons Added.
+# UPGRADED: Isolated Batch-Specific Dump Channels (Complete Isolation per Batch).
 # FIXED: 100% Sub-Bot Strict Routing (Main Bot Never Broadcasts).
 # NEW: "Scraper" Feature - Multiple Scrapers with Active Checkbox Tick selection!
 # FIXED: Cache/0-member Group Deletion & CHANNEL_INVALID Forward Exceptions.
@@ -113,8 +114,8 @@ BUTTON_COLOR_STYLES = {
     UB_ADD_2FA, UB_ADD_STRING, UB_ADD_BULK, UB_ADD_FILE, UB_RENAME,
     SB_ADD_TOKEN, SB_ADD_NAME, BATCH_ASSIGN_BOT, UB_NEW_BATCH_NAME, UB_ADD_ADMIN,
     SET_DUMP_CHANNEL, POSTER_MSG, POSTER_BTN_COUNT, POSTER_BTN_NAME, POSTER_BTN_LINK, 
-    POSTER_BTN_COLOR, BATCH_CONFIG_LINK_3, BATCH_ADDBOT_TOKEN, BATCH_ADDBOT_NAME
-) = range(63) 
+    POSTER_BTN_COLOR, BATCH_CONFIG_LINK_3, BATCH_ADDBOT_TOKEN, BATCH_ADDBOT_NAME, BAT_SET_DUMP_CHANNEL
+) = range(64) 
 
 DEFAULT_DATA = {
     "configured": False,
@@ -217,6 +218,7 @@ def load_data() -> Dict[str, Any]:
         if isinstance(bdata, list):
             data["batches"][bname] = {
                 "groups": bdata, "msg_id_1": None, "msg_id_2": None, "msg_id_3": None, "active_scraper": 1, "buttons": [],
+                "dump_channel_id": None,
                 "settings": {"auto_broadcast": False, "auto_delete": True, "delete_last": True, "auto_pin": False, "delay": 30, "delete_timer": 0, "link_to_global": False},
                 "stats": {"sent": 0, "failed": 0}, "assigned_bots": []
             }
@@ -225,6 +227,7 @@ def load_data() -> Dict[str, Any]:
             bdata.setdefault("msg_id_2", None)
             bdata.setdefault("msg_id_3", None)
             bdata.setdefault("active_scraper", 1)
+            bdata.setdefault("dump_channel_id", None)
             bdata.setdefault("settings", {"auto_broadcast": False, "auto_delete": True, "delete_last": True, "auto_pin": False, "delay": 30, "delete_timer": 0, "link_to_global": False})
             bdata["settings"].setdefault("delete_last", True)
             bdata["settings"].setdefault("link_to_global", False)
@@ -516,7 +519,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📨 Send Global Broadcast ONCE", callback_data="send_once")],
         [InlineKeyboardButton("🗂️ Manage Batches (Custom Msgs)", callback_data="groups_batches_menu")],
         [InlineKeyboardButton("📱 Manage Ads Accounts (Manager)", callback_data="userbots_menu")],
-        [InlineKeyboardButton("📢 Set Dump Channel", callback_data="set_dump_channel"), InlineKeyboardButton("🎨 Poster Maker (Dump)", callback_data="poster_maker_menu")],
+        [InlineKeyboardButton("📢 Set Global Dump Channel", callback_data="set_dump_channel"), InlineKeyboardButton("🎨 Poster Maker (Dump)", callback_data="poster_maker_menu")],
         [InlineKeyboardButton("⚙️ Global Ad & Old Settings", callback_data="old_settings_menu")]
     ])
 
@@ -637,6 +640,7 @@ def build_single_batch_keyboard(bname: str) -> InlineKeyboardMarkup:
 
     kb = [
         [InlineKeyboardButton("📊 Get Full Info (To Logger)", callback_data=f"bat_fullinfo_{bname}")],
+        [InlineKeyboardButton("📢 Set Batch Dump Channel", callback_data=f"bat_setdump_{bname}")],
         [InlineKeyboardButton("👥 Add/Remove Chats", callback_data=f"bat_edit_{bname}=0")],
         [InlineKeyboardButton("🤖 Manage Bots", callback_data=f"bat_managebots_{bname}")],
         [InlineKeyboardButton("⚙️ Configure Scrapers (Custom Msg)", callback_data=f"bat_setmsgmenu_{bname}")],
@@ -664,7 +668,6 @@ def build_batch_managebots_keyboard(bname: str) -> InlineKeyboardMarkup:
     kb.append([InlineKeyboardButton("🔙 Back to Batch", callback_data=f"bat_menu_{bname}")])
     return InlineKeyboardMarkup(kb)
 
-# NEW: Build Batch SetMsg Keyboard for Scrapers Tick UI
 def build_batch_setmsg_keyboard(bname: str) -> InlineKeyboardMarkup:
     data = load_data()
     bdata = data.get("batches", {}).get(bname, {})
@@ -1079,6 +1082,12 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
     auto_pin = settings.get("auto_pin", False)
     timer = settings.get("delete_timer", 0)
     
+    dump_to_use = bdata.get("dump_channel_id")
+    if not dump_to_use:
+        # Strict isolation: If batch dump is not set, it fails broadcast. 
+        # (This ensures it NEVER picks from the global dump inadvertently)
+        return 0, len(bdata.get("groups", []))
+    
     assigned_bots = [b for b in bdata.get("assigned_bots", []) if b != BOT_TOKEN]
     
     # Safe copy to avoid dict size changing during iteration if groups get deleted
@@ -1118,7 +1127,7 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
                 continue
 
             is_sent = await execute_send(
-                client_to_use, chat_id_str, data["dump_channel_id"], 
+                client_to_use, chat_id_str, dump_to_use, 
                 msg1, msg2, msg3, # Here msg1 has the active scraper link
                 auto_delete=auto_del, delete_last=del_last, auto_pin=auto_pin, 
                 delete_timer=timer, context=context, bot_token=bot_token_to_use
@@ -1149,7 +1158,6 @@ async def batch_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         for job in context.job_queue.get_jobs_by_name(job_name): job.schedule_removal()
         return
     await broadcast_batch(context, bname)
-
 # ==============================================================================
 # 12. USERBOTS - SPECIFIC OPERATIONS
 # ==============================================================================
@@ -1580,17 +1588,17 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
         
     if cd == "set_dump_channel":
-        await query.edit_message_text("📢 <b>Set Dump Channel</b>\n\nApne private Dump Channel ki ID bhejein (e.g., <code>-100123456789</code>).\n\n<i>Note: Sabhi bots (Main + Sub-bots) is channel mein Admin hone chahiye!</i>", parse_mode="HTML", reply_markup=cancel_keyboard())
+        await query.edit_message_text("📢 <b>Set Global Dump Channel</b>\n\nApne private Dump Channel ki ID bhejein (e.g., <code>-100123456789</code>).\n\n<i>Note: Sabhi bots (Main + Sub-bots) is channel mein Admin hone chahiye!</i>", parse_mode="HTML", reply_markup=cancel_keyboard())
         return SET_DUMP_CHANNEL
 
     # --- NEW POSTER MAKER ---
     if cd == "poster_maker_menu":
         if not is_dump_set(data):
-            await query.answer("❌ Pehle Dump Channel set karein!", show_alert=True)
+            await query.answer("❌ Pehle Global Dump Channel set karein!", show_alert=True)
             return ConversationHandler.END
         await query.edit_message_text(
-            "🎨 <b>Poster Maker (Dump Channel)</b>\n\n"
-            "Yahan se tum naya poster (Image/Video/Text) aur usme buttons attach karke seedha Dump Channel me bhej sakte ho.\n\n"
+            "🎨 <b>Poster Maker (Global Dump Channel)</b>\n\n"
+            "Yahan se tum naya poster (Image/Video/Text) aur usme buttons attach karke seedha Global Dump Channel me bhej sakte ho.\n\n"
             "👇 <b>Step 1:</b> Apna Photo, Video, ya sirf Text message bhejein jo poster me dikhana hai:",
             parse_mode="HTML", reply_markup=cancel_keyboard()
         )
@@ -1922,7 +1930,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
         
     if cd == "saved_ads_menu":
-        await query.edit_message_text("💾 <b>Saved Ads Management</b>\n\nConfigure 8 Custom Ads from your Dump Channel links to quickly apply them later.", parse_mode="HTML", reply_markup=saved_ads_keyboard())
+        await query.edit_message_text("💾 <b>Saved Ads Management</b>\n\nConfigure 8 Custom Ads from your Global Dump Channel links to quickly apply them later.", parse_mode="HTML", reply_markup=saved_ads_keyboard())
         return ConversationHandler.END
 
     if cd.startswith("saved_ad_edit_"):
@@ -1941,7 +1949,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         slot, _, token_prefix = raw_cd.partition("_")
         
         if not is_dump_set(data):
-            await query.answer("❌ Pehle Admin Menu se Dump Channel set karein!", show_alert=True)
+            await query.answer("❌ Pehle Admin Menu se Global Dump Channel set karein!", show_alert=True)
             return ConversationHandler.END
             
         bot_token = BOT_TOKEN if token_prefix == "main" else next((t for t in data["sub_bots"] if t.startswith(token_prefix)), BOT_TOKEN)
@@ -1949,7 +1957,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data(data)
 
         context.user_data['current_saved_ad_slot'] = slot
-        await query.edit_message_text(f"👇 <b>Step 1:</b> Saved Ad Slot {slot} ke liye Dump Channel se <b>1st Message ka Link</b> copy karke yahan bhejein:\n(e.g., https://t.me/c/12345/67)", parse_mode="HTML", reply_markup=cancel_keyboard())
+        await query.edit_message_text(f"👇 <b>Step 1:</b> Saved Ad Slot {slot} ke liye Global Dump Channel se <b>1st Message ka Link</b> copy karke yahan bhejein:\n(e.g., https://t.me/c/12345/67)", parse_mode="HTML", reply_markup=cancel_keyboard())
         return SAVED_AD_LINK_1
 
     if cd == "groups_batches_menu":
@@ -1995,6 +2003,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                f"📤 <b>Stats:</b> {bdata.get('stats', {}).get('sent', 0)} Sent | {bdata.get('stats', {}).get('failed', 0)} Failed")
         await query.edit_message_text(txt, reply_markup=build_single_batch_keyboard(bname), parse_mode="HTML")
         return ConversationHandler.END
+
+    # --- NEW: ISOLATED BATCH DUMP CHANNEL SETUP ---
+    if cd.startswith("bat_setdump_"):
+        bname = cd.replace("bat_setdump_", "", 1)
+        context.user_data['current_batch_setup'] = bname
+        await query.edit_message_text(
+            f"📢 <b>Set Dump Channel for Batch: '{bname}'</b>\n\n"
+            f"Kripya sirf is batch ke liye ek naya private Dump Channel banakar uski ID bhejein (e.g., <code>-100123456789</code>).\n"
+            f"Dhyan rahe, is batch ko assign kiye gaye bots is channel me Admin hone chahiye!",
+            parse_mode="HTML", reply_markup=cancel_keyboard()
+        )
+        return BAT_SET_DUMP_CHANNEL
+    # ----------------------------------------------
 
     if cd.startswith("bat_fullinfo_"):
         bname = cd.replace("bat_fullinfo_", "", 1)
@@ -2093,8 +2114,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if cd.startswith("bat_setmsgmenu_"):
         bname = cd.replace("bat_setmsgmenu_", "", 1)
-        if not is_dump_set(data):
-            await query.answer("❌ Pehle Dump Channel set karein!", show_alert=True)
+        bdata = data.get("batches", {}).get(bname, {})
+        if not bdata.get("dump_channel_id"):
+            await query.answer("❌ Pehle is Batch ka alag Dump Channel set karein (Batch Dashboard se)!", show_alert=True)
             return ConversationHandler.END
         await query.edit_message_text(f"⚙️ <b>Configure Scrapers ({bname})</b>\n\nYahan tum 3 custom scrapers setup kar sakte ho aur tick (✅) karke choose kar sakte ho ki abhi kaunsa scraper message broadcast karega.", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
         return ConversationHandler.END
@@ -2112,19 +2134,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cd.startswith("bat_setlink1_"):
         bname = cd.replace("bat_setlink1_", "", 1)
         context.user_data['current_batch_setup'] = bname
-        await query.edit_message_text(f"👇 <b>Setup Scraper 1:</b> Batch '{bname}' ke liye Dump Channel se <b>1st Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/67)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 1))
+        await query.edit_message_text(f"👇 <b>Setup Scraper 1:</b> Batch '{bname}' ke personal Dump Channel se <b>1st Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/67)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 1))
         return BATCH_CONFIG_LINK_1
 
     if cd.startswith("bat_setlink2_"):
         bname = cd.replace("bat_setlink2_", "", 1)
         context.user_data['current_batch_setup'] = bname
-        await query.edit_message_text(f"👇 <b>Setup Scraper 2:</b> Batch '{bname}' ke liye Dump Channel se <b>2nd Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/68)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 2))
+        await query.edit_message_text(f"👇 <b>Setup Scraper 2:</b> Batch '{bname}' ke personal Dump Channel se <b>2nd Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/68)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 2))
         return BATCH_CONFIG_LINK_2
         
     if cd.startswith("bat_setlink3_"):
         bname = cd.replace("bat_setlink3_", "", 1)
         context.user_data['current_batch_setup'] = bname
-        await query.edit_message_text(f"👇 <b>Setup Scraper 3:</b> Batch '{bname}' ke liye Dump Channel se <b>3rd Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/69)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 3))
+        await query.edit_message_text(f"👇 <b>Setup Scraper 3:</b> Batch '{bname}' ke personal Dump Channel se <b>3rd Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/69)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 3))
         return BATCH_CONFIG_LINK_3
 
     if cd.startswith("bat_dellink_"):
@@ -2167,8 +2189,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if cd.startswith("bat_send_"):
         bname = cd.replace("bat_send_", "", 1)
-        if not is_dump_set(data):
-            await query.answer("❌ Dump Channel Missing!", show_alert=True)
+        bdata = data.get("batches", {}).get(bname)
+        if not bdata or not bdata.get("dump_channel_id"):
+            await query.answer("❌ Dump Channel Missing for this Batch!", show_alert=True)
             return ConversationHandler.END
         await query.edit_message_text(f"Sending ONE TIME broadcast to batch {bname}...")
         sent, failed = await broadcast_batch(context, bname)
@@ -2281,9 +2304,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if cd == "configure_now":
         if not is_dump_set(data):
-            await query.answer("❌ Pehle Dump Channel set karein!", show_alert=True)
+            await query.answer("❌ Pehle Global Dump Channel set karein!", show_alert=True)
             return ConversationHandler.END
-        await query.edit_message_text("👇 <b>Step 1:</b> Ad ke liye Dump Channel se <b>1st Message ka Link</b> copy karke yahan bhejein:\n(e.g., https://t.me/c/123/45)", parse_mode="HTML", reply_markup=cancel_keyboard())
+        await query.edit_message_text("👇 <b>Step 1:</b> Ad ke liye Global Dump Channel se <b>1st Message ka Link</b> copy karke yahan bhejein:\n(e.g., https://t.me/c/123/45)", parse_mode="HTML", reply_markup=cancel_keyboard())
         return CONFIG_AD_LINK_1
         
     if cd == "change_delay":
@@ -2320,7 +2343,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     if cd == "change_ad":
         if not is_dump_set(data):
-            await query.answer("❌ Pehle Dump Channel set karein!", show_alert=True)
+            await query.answer("❌ Pehle Global Dump Channel set karein!", show_alert=True)
             return ConversationHandler.END
         await query.edit_message_text("👇 <b>Step 1:</b> Naye Global Ad ke liye <b>1st Message ka Link</b> bhejein:\n(e.g., https://t.me/c/123/45)", parse_mode="HTML", reply_markup=cancel_keyboard())
         return CHANGE_AD_LINK_1
@@ -2337,7 +2360,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     if cd == "change_start":
         if not is_dump_set(data):
-            await query.answer("❌ Pehle Dump Channel set karein!", show_alert=True)
+            await query.answer("❌ Pehle Global Dump Channel set karein!", show_alert=True)
             return ConversationHandler.END
         await query.edit_message_text("👇 <b>Step 1:</b> Start message ke liye <b>1st Message ka Link</b> bhejein.", parse_mode="HTML", reply_markup=cancel_keyboard())
         return CHANGE_START_LINK_1
@@ -2649,7 +2672,7 @@ async def execute_poster_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             reply_to = update.effective_message
             
-        wait_msg = await reply_to.reply_text("⏳ Generating Poster and sending to Dump Channel...")
+        wait_msg = await reply_to.reply_text("⏳ Generating Poster and sending to Global Dump Channel...")
         
         posted_msg = await context.bot.copy_message(
             chat_id=int(dump_id),
@@ -2660,7 +2683,7 @@ async def execute_poster_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         post_link = f"https://t.me/c/{str(dump_id).replace('-100', '')}/{posted_msg.message_id}"
         await wait_msg.edit_text(
-            f"✅ <b>Poster Created Successfully!</b>\n\n🔗 <b>Link:</b> {post_link}\n\n<i>Use this link in Ad Setup/Start Message setup directly.</i>", 
+            f"✅ <b>Poster Created Successfully!</b>\n\n🔗 <b>Link:</b> {post_link}\n\n<i>Use this link in Global Ad Setup/Start Message setup directly.</i>", 
             parse_mode="HTML", reply_markup=admin_keyboard()
         )
     except Exception as e:
@@ -2682,8 +2705,30 @@ async def handle_set_dump_channel(update: Update, context: ContextTypes.DEFAULT_
     data = load_data()
     data["dump_channel_id"] = dump_id
     save_data(data)
-    await update.effective_message.reply_text("✅ <b>Dump Channel Setup Successful!</b>\n\nAb tum links se ads/messages setup kar sakte ho.", parse_mode="HTML", reply_markup=admin_keyboard())
+    await update.effective_message.reply_text("✅ <b>Global Dump Channel Setup Successful!</b>\n\nAb tum Global Links/Posters setup kar sakte ho.", parse_mode="HTML", reply_markup=admin_keyboard())
     return ConversationHandler.END
+
+# --- NEW: HANDLE BATCH DUMP CHANNEL ---
+async def handle_batch_set_dump_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    dump_id = update.effective_message.text.strip()
+    bname = context.user_data.get('current_batch_setup')
+    
+    if not dump_id.startswith("-100"):
+        await update.effective_message.reply_text("❌ Invalid ID. Channel ID must start with -100 (e.g., -100123456789). Try again:", reply_markup=cancel_keyboard())
+        return BAT_SET_DUMP_CHANNEL
+    
+    data = load_data()
+    if bname in data.get("batches", {}):
+        data["batches"][bname]["dump_channel_id"] = dump_id
+        save_data(data)
+        await update.effective_message.reply_text(
+            f"✅ <b>Batch Dump Channel Setup Successful!</b>\n\nBatch '{bname}' ab sirf apne private isolated dump channel ({dump_id}) se hi links (scrapers) dhoondega aur broadcast karega.", 
+            parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname)
+        )
+    else:
+        await update.effective_message.reply_text("❌ Batch not found.", reply_markup=admin_keyboard())
+    return ConversationHandler.END
+# --------------------------------------
 
 async def handle_wait_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -2702,11 +2747,12 @@ async def handle_wait_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if bname not in data["batches"]:
             data["batches"][bname] = {
                 "groups": [], "msg_id_1": None, "msg_id_2": None, "msg_id_3": None, "active_scraper": 1, "buttons": [], 
+                "dump_channel_id": None,
                 "settings": {"auto_broadcast": False, "auto_delete": True, "delete_last": True, "auto_pin": False, "delay": 30, "delete_timer": 0, "link_to_global": False}, 
                 "stats": {"sent": 0, "failed": 0}, "assigned_bots": []
             }
             save_data(data)
-            await msg.reply_text(f"✅ Batch '{bname}' created!", parse_mode="HTML", reply_markup=build_batches_keyboard(0))
+            await msg.reply_text(f"✅ Batch '{bname}' created!\n\n(Don't forget to set its Dump Channel!)", parse_mode="HTML", reply_markup=build_batches_keyboard(0))
         else:
             await msg.reply_text("❌ Batch already exists!", parse_mode="HTML", reply_markup=build_batches_keyboard(0))
     return ConversationHandler.END
@@ -2777,7 +2823,7 @@ async def batch_config_link_1(update: Update, context: ContextTypes.DEFAULT_TYPE
         data["batches"][bname]["msg_id_1"] = msg_id
         
     save_data(data)
-    await update.effective_message.reply_text("✅ <b>Scraper 1 Updated!</b>", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
+    await update.effective_message.reply_text("✅ <b>Scraper 1 Updated successfully!</b>\n\n(It will now fetch from this Batch's Dump Channel only)", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
     return ConversationHandler.END
 
 async def batch_config_link_2(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2795,7 +2841,7 @@ async def batch_config_link_2(update: Update, context: ContextTypes.DEFAULT_TYPE
         data["batches"][bname]["msg_id_2"] = msg_id
         
     save_data(data)
-    await update.effective_message.reply_text("✅ <b>Scraper 2 Updated!</b>", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
+    await update.effective_message.reply_text("✅ <b>Scraper 2 Updated successfully!</b>", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
     return ConversationHandler.END
     
 async def batch_config_link_3(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2813,7 +2859,7 @@ async def batch_config_link_3(update: Update, context: ContextTypes.DEFAULT_TYPE
         data["batches"][bname]["msg_id_3"] = msg_id
         
     save_data(data)
-    await update.effective_message.reply_text("✅ <b>Scraper 3 Updated!</b>", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
+    await update.effective_message.reply_text("✅ <b>Scraper 3 Updated successfully!</b>", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
     return ConversationHandler.END
 
 # Legacy button handlers
@@ -3188,6 +3234,7 @@ def main():
         entry_points=[CallbackQueryHandler(callback_handler, pattern="^(?!(color_|sbcol_|confirm_broadcast|cancel_broadcast|cancel_state)).*$")],
         states={
             SET_DUMP_CHANNEL: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_set_dump_channel)],
+            BAT_SET_DUMP_CHANNEL: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_batch_set_dump_channel)],
             CONFIG_AD_LINK_1: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, config_receive_ad_link_1)],
             CONFIG_AD_LINK_2: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, config_receive_ad_link_2)],
             CONFIG_BUTTON_COUNT: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, config_receive_button_count)],
@@ -3272,6 +3319,7 @@ def main():
     print("\n[+] Advanced Bot Architecture Initialized Successfully.")
     print("[+] Dump Channel Native Forward Routing Protocol Active.")
     print("[+] Sub-Bot Strict Priority Broadcast System Active...")
+    print("[+] Isolated Batch-Specific Dump Channels Enabled.")
     print("[+] Multiple Scraper Logic (Tick System) Loaded.")
     print("[+] 0-Member / Cache Delete Exception Handler Active.")
     print("[+] Link Deletion UI Feature Loaded.")
