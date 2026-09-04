@@ -11,7 +11,7 @@
 # FIXED: Cache/0-member Group Deletion & CHANNEL_INVALID Forward Exceptions.
 # FIXED: Bot Sub-Menu UI and Deletion functionality.
 # FIXED: Strict Bot Isolation in Batch Add/Remove Groups Menu.
-# FIXED: Auto-Broadcast Job Persistence and Timer Execution with Random Delays.
+# FIXED: JobQueue completely removed! Native Asyncio Background Scheduler implemented.
 # NEW: Dedicated Auto-Broadcast Menu in Batches & Global Link Behavior.
 # ==============================================================================
 
@@ -87,7 +87,6 @@ MONGO_URI = "mongodb+srv://Tejas7xx:mrxtejas7@cluster0.akhlgjf.mongodb.net/?appN
 # ==============================================================================
 
 DATA_FILE = Path(f"bot_data_{BOT_TOKEN.split(':')[0]}.json" if ":" in BOT_TOKEN else "bot_data.json")
-ADS_JOB_NAME = "ads_broadcast_cycle"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
@@ -955,40 +954,73 @@ async def track_bot_chat_status(update: Update, context: ContextTypes.DEFAULT_TY
         await send_to_logger(f"🛑 <b>Bot removed/banned from chat!</b>\n\n<b>Title:</b> {chat.title}")
 
 # ==============================================================================
-# 10. BACKGROUND SCHEDULING (Broadcasting Cycles) - FIXED
+# 10. BACKGROUND SCHEDULING (Broadcasting Cycles) - NATIVE ASYNCIO FIX
 # ==============================================================================
 
-def remove_ads_jobs(context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not context.job_queue: return
-    for job in context.job_queue.get_jobs_by_name(ADS_JOB_NAME): job.schedule_removal()
+GLOBAL_TASKS = {
+    "ads_job": None,
+    "batch_jobs": {},
+    "refresh_job": None
+}
 
-def schedule_ads_job(context: ContextTypes.DEFAULT_TYPE, first: int = None) -> None:
-    if not context.job_queue: return
+def remove_ads_jobs(context: ContextTypes.DEFAULT_TYPE = None) -> None:
+    task = GLOBAL_TASKS.get("ads_job")
+    if task and not task.done():
+        task.cancel()
+    GLOBAL_TASKS["ads_job"] = None
+
+def schedule_ads_job(context: ContextTypes.DEFAULT_TYPE = None, first: int = None) -> None:
+    remove_ads_jobs(context)
     data = load_data()
     if not data.get("started") or not data.get("configured") or not has_ad_config(data): return
+    
     delay_val = data.get("delay", 30)
     next_delay = first if first is not None else parse_delay(delay_val)
-    remove_ads_jobs(context)
-    context.job_queue.run_once(ads_cycle_job, next_delay, name=ADS_JOB_NAME)
+    
+    async def run_ads_loop():
+        if next_delay > 0:
+            await asyncio.sleep(next_delay)
+        while True:
+            current_data = load_data()
+            if not current_data.get("started"): break
+            await broadcast_ads(context)
+            d_val = load_data().get("delay", 30)
+            await asyncio.sleep(parse_delay(d_val))
+
+    GLOBAL_TASKS["ads_job"] = asyncio.create_task(run_ads_loop())
 
 def manage_batch_job(context: ContextTypes.DEFAULT_TYPE, bname: str, start: bool) -> None:
-    if not context.job_queue: return
-    job_name = f"batch_job_{bname}"
-    for job in context.job_queue.get_jobs_by_name(job_name): job.schedule_removal()
+    task = GLOBAL_TASKS["batch_jobs"].get(bname)
+    if task and not task.done():
+        task.cancel()
+        
     if start:
         data = load_data()
         bdata = data.get("batches", {}).get(bname)
         if bdata:
             delay_val = bdata["settings"].get("delay", 30)
             next_delay = parse_delay(delay_val)
-            # FIX: Runs after delay time instead of instantly at 0, strictly following user preference
-            context.job_queue.run_once(batch_cycle_job, next_delay, data=bname, name=job_name)
+            
+            async def run_batch_loop():
+                if next_delay > 0:
+                    await asyncio.sleep(next_delay)
+                while True:
+                    b_data = load_data().get("batches", {}).get(bname)
+                    if not b_data or not b_data["settings"].get("auto_broadcast"): break
+                    if not b_data["settings"].get("link_to_global", False):
+                        try:
+                            await broadcast_batch(context, bname)
+                        except Exception as broadcast_err:
+                            logger.error(f"Broadcast failure in batch {bname}: {broadcast_err}")
+                    bd_val = load_data().get("batches", {}).get(bname, {})["settings"].get("delay", 30)
+                    await asyncio.sleep(parse_delay(bd_val))
 
-async def delete_sent_message_job(context: ContextTypes.DEFAULT_TYPE):
+            GLOBAL_TASKS["batch_jobs"][bname] = asyncio.create_task(run_batch_loop())
+
+async def delete_sent_message_async(bot_token: str, chat_id: int, msg_id: int, delay: int):
+    await asyncio.sleep(delay)
     try:
-        bot_token, chat_id, msg_id = context.job.data
         client = main_pyro_client if bot_token == BOT_TOKEN else sub_bot_clients.get(bot_token)
-        
         if client:
             await client.delete_messages(chat_id=chat_id, message_ids=msg_id)
         
@@ -1002,6 +1034,12 @@ async def delete_sent_message_job(context: ContextTypes.DEFAULT_TYPE):
                     history_list.remove(msg_id)
             save_data(data)
     except Exception: pass
+    
+async def auto_refresh_loop():
+    await asyncio.sleep(3600)
+    while True:
+        await auto_refresh_userbots_job(None)
+        await asyncio.sleep(9 * 3600)
 
 # ==============================================================================
 # 11. CORE BROADCAST EXECUTION ENGINE 
@@ -1078,9 +1116,9 @@ async def execute_send(
         data["total_broadcasts_sent"] = data.get("total_broadcasts_sent", 0) + 1
         save_data(data)
         
-        if auto_delete and delete_timer > 0 and context and context.job_queue:
+        if auto_delete and delete_timer > 0:
             for s_id in sent_msg_ids:
-                context.job_queue.run_once(delete_sent_message_job, delete_timer, data=(bot_token, chat_id, s_id))
+                asyncio.create_task(delete_sent_message_async(bot_token, chat_id, s_id, delete_timer))
             
         await asyncio.sleep(0.05)
         return True
@@ -1194,7 +1232,7 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
                 bot_info = data.get("sub_bots", {}).get(bot_token_to_use)
                 if bot_info:
                     await start_subbot_listener(bot_token_to_use, bot_info.get("name", "Unknown"))
-                    await asyncio.sleep(0.5) # Give it a fraction of a second to establish connection
+                    await asyncio.sleep(0.5) 
                     
             client_to_use = sub_bot_clients.get(bot_token_to_use)
                 
@@ -1218,48 +1256,6 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
                 
     save_data(data)
     return sent_cnt, failed_cnt
-
-async def ads_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    data = load_data()
-    if not data.get("started"):
-        remove_ads_jobs(context)
-        return
-    await broadcast_ads(context)
-    
-    if load_data().get("started"):
-        delay_val = load_data().get("delay", 30)
-        next_delay = parse_delay(delay_val)
-        context.job_queue.run_once(ads_cycle_job, next_delay, name=ADS_JOB_NAME)
-
-async def batch_cycle_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    bname = context.job.data
-    try:
-        data = load_data()
-        bdata = data.get("batches", {}).get(bname)
-        if not bdata or not bdata["settings"].get("auto_broadcast"):
-            job_name = f"batch_job_{bname}"
-            for job in context.job_queue.get_jobs_by_name(job_name): job.schedule_removal()
-            return
-            
-        # Global broadcast triggers linked batches natively, so avoid double run here.
-        if not bdata["settings"].get("link_to_global", False):
-            try:
-                await broadcast_batch(context, bname)
-            except Exception as broadcast_err:
-                logger.error(f"Broadcast failure in batch {bname}: {broadcast_err}")
-        
-        # Reschedule recursively 
-        refreshed_data = load_data()
-        refreshed_bdata = refreshed_data.get("batches", {}).get(bname)
-        if refreshed_bdata and refreshed_bdata["settings"].get("auto_broadcast"):
-            delay_val = refreshed_bdata["settings"].get("delay", 30)
-            next_delay = parse_delay(delay_val)
-            context.job_queue.run_once(batch_cycle_job, next_delay, data=bname, name=f"batch_job_{bname}")
-            
-    except Exception as e:
-        logger.error(f"Fatal error in batch_cycle_job loop for {bname}: {e}")
-        # Safeguard to maintain loop even on unhandled errors
-        context.job_queue.run_once(batch_cycle_job, 30, data=bname, name=f"batch_job_{bname}")
 
 # ==============================================================================
 # 12. USERBOTS - SPECIFIC OPERATIONS
@@ -1620,6 +1616,7 @@ async def run_userbot_add_admin(update: Update, context: ContextTypes.DEFAULT_TY
         await reply.edit_text(f"❌ Error during Add Admin task: {e}", reply_markup=userbot_single_keyboard(ub_id))
     return ConversationHandler.END
 
+# --- PART 1 END ---
 # ==============================================================================
 # 13. MAIN COMMAND HANDLERS
 # ==============================================================================
@@ -1659,7 +1656,6 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await remember_user(update)
     await update.message.reply_text("Admin Menu 👑", reply_markup=admin_keyboard())
 
-# --- END OF PART 1 ---
 # ==============================================================================
 # 14. CALLBACK QUERY HANDLERS (The Brain of the UI)
 # ==============================================================================
@@ -1695,7 +1691,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("📢 <b>Set Global Dump Channel</b>\n\nApne private Dump Channel ki ID bhejein (e.g., <code>-100123456789</code>).\n\n<i>Note: Sabhi bots (Main + Sub-bots) is channel mein Admin hone chahiye!</i>", parse_mode="HTML", reply_markup=cancel_keyboard())
         return SET_DUMP_CHANNEL
 
-    # --- NEW POSTER MAKER ---
     if cd == "poster_maker_menu":
         if not is_dump_set(data):
             await query.answer("❌ Pehle Global Dump Channel set karein!", show_alert=True)
@@ -1707,7 +1702,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML", reply_markup=cancel_keyboard()
         )
         return POSTER_MSG
-    # ------------------------
 
     if cd == "userbots_menu":
         txt = "📱 <b>Manage Ads Accounts (Userbots Dashboard)</b>\n\nChoose a batch to view your accounts, or manage global settings."
@@ -2020,7 +2014,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             asyncio.create_task(stop_subbot_listener(full_token)) 
             del data["sub_bots"][full_token]
             
-            # Remove from any batches
             for bname, bdata in data.get("batches", {}).items():
                 if full_token in bdata.get("assigned_bots", []):
                     bdata["assigned_bots"].remove(full_token)
@@ -2108,7 +2101,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(txt, reply_markup=build_single_batch_keyboard(bname), parse_mode="HTML")
         return ConversationHandler.END
 
-    # --- NEW AUTO BROADCAST MENU FOR BATCHES ---
     if cd.startswith("bat_autobcast_menu_"):
         bname = cd.replace("bat_autobcast_menu_", "", 1)
         bdata = data.get("batches", {}).get(bname)
@@ -2313,7 +2305,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = data["batches"][bname]["settings"]["auto_broadcast"]
         data["batches"][bname]["settings"]["auto_broadcast"] = not state
         save_data(data)
-        manage_batch_job(context, bname, not state)
+        manage_batch_job(None, bname, not state)
         await query.edit_message_reply_markup(reply_markup=build_batch_autobcast_keyboard(bname))
         return ConversationHandler.END
 
@@ -2330,7 +2322,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = data["batches"][bname]["settings"].get("link_to_global", False)
         data["batches"][bname]["settings"]["link_to_global"] = not state
         save_data(data)
-        # If toggled globally, refresh the main batch keyboard.
         await query.edit_message_reply_markup(reply_markup=build_single_batch_keyboard(bname))
         return ConversationHandler.END
 
@@ -2375,7 +2366,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if bname in data["batches"]:
             del data["batches"][bname]
             save_data(data)
-            manage_batch_job(context, bname, False)
+            manage_batch_job(None, bname, False)
         await query.edit_message_text(f"🗑️ Batch '{bname}' has been deleted.", parse_mode="HTML", reply_markup=build_batches_keyboard())
         return ConversationHandler.END
 
@@ -2435,11 +2426,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["started"] = not data["started"]
         save_data(data)
         if not data["started"]:
-            remove_ads_jobs(context)
+            remove_ads_jobs(None)
             await query.edit_message_text("Global Auto Broadcast stopped 🔴", parse_mode="HTML", reply_markup=admin_keyboard())
         else:
             await query.edit_message_text("Global Auto Broadcast started 🟢 (Looping at interval)", parse_mode="HTML")
-            schedule_ads_job(context, first=0)
+            schedule_ads_job(None, first=0)
             await query.message.reply_text("Auto broadcast has been triggered.", parse_mode="HTML", reply_markup=admin_keyboard())
         return ConversationHandler.END
         
@@ -2481,7 +2472,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return BROADCAST_MESSAGE
 
     return ConversationHandler.END
-
 
 # ==============================================================================
 # 15. USERBOT LOGIN (PYROGRAM SESSION GENERATORS)
@@ -2990,7 +2980,7 @@ async def receive_batch_delay(update: Update, context: ContextTypes.DEFAULT_TYPE
     data = load_data()
     data["batches"][bname]["settings"]["delay"] = delay_str
     save_data(data)
-    if data["batches"][bname]["settings"]["auto_broadcast"]: manage_batch_job(context, bname, True)
+    if data["batches"][bname]["settings"]["auto_broadcast"]: manage_batch_job(None, bname, True)
     await update.effective_message.reply_text(f"Delay for {bname} updated ✅", parse_mode="HTML", reply_markup=build_batch_autobcast_keyboard(bname))
     return ConversationHandler.END
 
@@ -3104,7 +3094,7 @@ async def receive_change_delay(update: Update, context: ContextTypes.DEFAULT_TYP
     data = load_data()
     data["delay"] = delay_str
     save_data(data)
-    if data.get("started"): schedule_ads_job(context)
+    if data.get("started"): schedule_ads_job(None)
     await update.effective_message.reply_text("✅ Delay changed!", parse_mode="HTML", reply_markup=admin_keyboard())
     return ConversationHandler.END
 
@@ -3274,24 +3264,18 @@ async def post_init(application: Application) -> None:
     main_pyro_client = Client(name=f"main_{bot_id}", bot_token=BOT_TOKEN, api_id=API_ID, api_hash=API_HASH, in_memory=True)
     await main_pyro_client.start()
     
-    if application.job_queue:
-        if data.get("started") and data.get("configured") and has_ad_config(data):
-            next_delay = parse_delay(data.get("delay", 30))
-            application.job_queue.run_once(ads_cycle_job, next_delay, name=ADS_JOB_NAME)
-            
-        for bname, bdata in data.get("batches", {}).items():
-            # Agar batch global se linked nahi hai aur auto broadcast on hai tabhi start kare
-            is_global = bdata.get("settings", {}).get("link_to_global", False)
-            if bdata.get("settings", {}).get("auto_broadcast") and not is_global:
-                next_delay = parse_delay(bdata["settings"].get("delay", 30))
-                application.job_queue.run_once(batch_cycle_job, next_delay, data=bname, name=f"batch_job_{bname}")
+    if data.get("started") and data.get("configured") and has_ad_config(data):
+        schedule_ads_job(None, first=parse_delay(data.get("delay", 30)))
+        
+    for bname, bdata in data.get("batches", {}).items():
+        is_global = bdata.get("settings", {}).get("link_to_global", False)
+        if bdata.get("settings", {}).get("auto_broadcast") and not is_global:
+            manage_batch_job(None, bname, True)
 
-        for token, info in data.get("sub_bots", {}).items():
-            application.create_task(start_subbot_listener(token, info["name"]))
+    for token, info in data.get("sub_bots", {}).items():
+        application.create_task(start_subbot_listener(token, info["name"]))
 
-        application.job_queue.run_repeating(auto_refresh_userbots_job, interval=9 * 3600, first=3600)
-    else:
-        logger.warning("Job queue is missing (APScheduler not installed). Auto-broadcasting is disabled to prevent crashes.")
+    application.create_task(auto_refresh_loop())
 
     active_userbots = 0
     sessions_txt = ""
@@ -3428,6 +3412,7 @@ def main():
     print("[+] Multiple Scraper Logic (Tick System) Loaded.")
     print("[+] 0-Member / Cache Delete Exception Handler Active.")
     print("[+] Link Deletion UI Feature Loaded.")
+    print("[+] Native Asyncio Engine Loaded (JobQueue Disabled).")
     print("[+] Auto-Restore Core Module & Logger Services Validated.")
     print("[+] Random Intervals & Global Priority Override Enabled.\n")
     
