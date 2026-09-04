@@ -746,9 +746,6 @@ def build_batch_edit_keyboard(bname: str, page: int = 0) -> InlineKeyboardMarkup
     kb.append([InlineKeyboardButton("🔙 Done", callback_data=f"bat_menu_{bname}")])
     return InlineKeyboardMarkup(kb)
 
-# ==============================================================================
-# JAB BHI TUM 'continue' LIKHOGE, MAIN PART 2 DENA START KARUNGA
-# ==============================================================================
 def build_date_stats_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     data = load_data()
     groups = data.get("groups", {})
@@ -933,6 +930,7 @@ async def delete_sent_message_job(context: ContextTypes.DEFAULT_TYPE):
                     history_list.remove(msg_id)
             save_data(data)
     except Exception: pass
+
 # ==============================================================================
 # 11. CORE BROADCAST EXECUTION ENGINE (UPGRADED DUMP CHANNEL FIX)
 # ==============================================================================
@@ -1470,7 +1468,6 @@ async def run_userbot_add_admin(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         await reply.edit_text(f"❌ Error during Add Admin task: {e}", reply_markup=userbot_single_keyboard(ub_id))
     return ConversationHandler.END
-    
 # ==============================================================================
 # 13. MAIN COMMAND HANDLERS
 # ==============================================================================
@@ -1832,6 +1829,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cd == "subbots_menu":
         await query.edit_message_text("🤖 <b>Manage Multi-Bot Architecture</b>\n\nAdd extra bot tokens here to assign them to different batches, avoiding rate limits.", parse_mode="HTML", reply_markup=subbots_keyboard())
         return ConversationHandler.END
+    
     if cd == "sb_add":
         await query.edit_message_text("🤖 Send the New Bot Token:", parse_mode="HTML", reply_markup=cancel_keyboard())
         return SB_ADD_TOKEN
@@ -2700,7 +2698,7 @@ async def batch_config_link_1(update: Update, context: ContextTypes.DEFAULT_TYPE
     bname = context.user_data.get('current_batch_setup')
     data = load_data()
     
-    if text.lower().strip() in ['/remove', 'remove']:[span_0](start_span)[span_0](end_span)
+    if text.lower().strip() in ['/remove', 'remove']:
         data["batches"][bname]["msg_id_1"] = None
     else:
         msg_id = extract_msg_id_from_link(text)
@@ -2718,7 +2716,7 @@ async def batch_config_link_2(update: Update, context: ContextTypes.DEFAULT_TYPE
     bname = context.user_data.get('current_batch_setup')
     data = load_data()
 
-    if text.lower().strip() in ['/remove', 'remove']:[span_1](start_span)[span_1](end_span)
+    if text.lower().strip() in ['/remove', 'remove']:
         data["batches"][bname]["msg_id_2"] = None
     else:
         msg_id = extract_msg_id_from_link(text)
@@ -2736,7 +2734,7 @@ async def batch_config_link_3(update: Update, context: ContextTypes.DEFAULT_TYPE
     bname = context.user_data.get('current_batch_setup')
     data = load_data()
 
-    if text.lower().strip() in ['/remove', 'remove']:[span_2](start_span)[span_2](end_span)
+    if text.lower().strip() in ['/remove', 'remove']:
         data["batches"][bname]["msg_id_3"] = None
     else:
         msg_id = extract_msg_id_from_link(text)
@@ -2808,7 +2806,7 @@ async def saved_ad_receive_link_2(update: Update, context: ContextTypes.DEFAULT_
     slot = context.user_data.get('current_saved_ad_slot')
     data = load_data()
 
-    if text.lower().strip() in ['/skip', 'skip']:[span_3](start_span)[span_3](end_span)
+    if text.lower().strip() in ['/skip', 'skip']:
         data["saved_ads"][slot]["msg_id_2"] = None
     else:
         msg_id = extract_msg_id_from_link(text)
@@ -2845,7 +2843,7 @@ async def config_receive_ad_link_2(update: Update, context: ContextTypes.DEFAULT
     text = update.effective_message.text.strip()
     data = load_data()
 
-    if text.lower().strip() in ['/skip', 'skip']:[span_4](start_span)[span_4](end_span)
+    if text.lower().strip() in ['/skip', 'skip']:
         data["ad_msg_id_2"] = None
     else:
         msg_id = extract_msg_id_from_link(text)
@@ -2918,7 +2916,7 @@ async def receive_change_ad_link_2(update: Update, context: ContextTypes.DEFAULT
     text = update.effective_message.text.strip()
     data = load_data()
 
-    if text.lower().strip() in ['/skip', 'skip']:[span_5](start_span)[span_5](end_span)
+    if text.lower().strip() in ['/skip', 'skip']:
         data["ad_msg_id_2"] = None
     else:
         msg_id = extract_msg_id_from_link(text)
@@ -2956,7 +2954,7 @@ async def receive_change_start_link_2(update: Update, context: ContextTypes.DEFA
     text = update.effective_message.text.strip()
     data = load_data()
 
-    if text.lower().strip() in ['/skip', 'skip']:[span_6](start_span)[span_6](end_span)
+    if text.lower().strip() in ['/skip', 'skip']:
         data["start_msg_id_2"] = None
     else:
         msg_id = extract_msg_id_from_link(text)
