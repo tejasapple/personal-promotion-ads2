@@ -5,6 +5,7 @@
 # UPGRADED: Direct unlimited bot tokens inside batches.
 # UPGRADED: Smart Chat Sorting (New First, Ticked Last).
 # UPGRADED: Bot-specific chat filtering & Auto-Batch creation removed.
+# UPGRADED: Strict Bot Isolation in Broadcast & Delete Link UI Buttons Added.
 # ==============================================================================
 
 import json
@@ -1059,9 +1060,24 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
     
     for chat_id_str in bdata.get("groups", []):
         if chat_id_str in data.get("groups", {}):
+            ginfo = data["groups"][chat_id_str]
+            g_bot_id = ginfo.get("bot_id")
             
-            # Select random bot if list is populated, else fallback to main bot
-            bot_token_to_use = random.choice(assigned_bots) if assigned_bots else BOT_TOKEN
+            bot_token_to_use = None
+            
+            # 1. STRICT ISOLATION: Match the exact bot that added this group
+            if g_bot_id:
+                if str(g_bot_id) == str(BOT_TOKEN.split(':')[0]):
+                    bot_token_to_use = BOT_TOKEN
+                else:
+                    for t in data.get("sub_bots", {}):
+                        if t.startswith(str(g_bot_id)):
+                            bot_token_to_use = t
+                            break
+            
+            # 2. Fallback to assigned bots ONLY if exact bot is somehow not recorded
+            if not bot_token_to_use:
+                bot_token_to_use = random.choice(assigned_bots) if assigned_bots else BOT_TOKEN
             
             client_to_use = main_pyro_client
             if bot_token_to_use != BOT_TOKEN:
@@ -1510,6 +1526,12 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # ==============================================================================
 # 14. CALLBACK QUERY HANDLERS (The Brain of the UI)
 # ==============================================================================
+
+def set_link_keyboard(bname: str, link_num: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑️ Delete Link", callback_data=f"bat_dellink_{link_num}_{bname}")],
+        [InlineKeyboardButton("🔙 Back / Cancel", callback_data="cancel_state")]
+    ])
 
 async def cancel_state_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -2055,20 +2077,30 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cd.startswith("bat_setlink1_"):
         bname = cd.replace("bat_setlink1_", "", 1)
         context.user_data['current_batch_setup'] = bname
-        await query.edit_message_text(f"👇 <b>Add First Link:</b> Batch '{bname}' ke liye Dump Channel se <b>1st Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/67)\n\n<i>Remove karne ke liye /remove bhejein.</i>", parse_mode="HTML", reply_markup=cancel_keyboard())
+        await query.edit_message_text(f"👇 <b>Add First Link:</b> Batch '{bname}' ke liye Dump Channel se <b>1st Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/67)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 1))
         return BATCH_CONFIG_LINK_1
 
     if cd.startswith("bat_setlink2_"):
         bname = cd.replace("bat_setlink2_", "", 1)
         context.user_data['current_batch_setup'] = bname
-        await query.edit_message_text(f"👇 <b>Add Second Link:</b> Batch '{bname}' ke liye Dump Channel se <b>2nd Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/68)\n\n<i>Remove karne ke liye /remove bhejein.</i>", parse_mode="HTML", reply_markup=cancel_keyboard())
+        await query.edit_message_text(f"👇 <b>Add Second Link:</b> Batch '{bname}' ke liye Dump Channel se <b>2nd Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/68)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 2))
         return BATCH_CONFIG_LINK_2
         
     if cd.startswith("bat_setlink3_"):
         bname = cd.replace("bat_setlink3_", "", 1)
         context.user_data['current_batch_setup'] = bname
-        await query.edit_message_text(f"👇 <b>Add Third Link:</b> Batch '{bname}' ke liye Dump Channel se <b>3rd Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/69)\n\n<i>Remove karne ke liye /remove bhejein.</i>", parse_mode="HTML", reply_markup=cancel_keyboard())
+        await query.edit_message_text(f"👇 <b>Add Third Link:</b> Batch '{bname}' ke liye Dump Channel se <b>3rd Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/69)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 3))
         return BATCH_CONFIG_LINK_3
+
+    # --- NEW: Delete Link Action handler directly from Inline Buttons ---
+    if cd.startswith("bat_dellink_"):
+        raw_cd = cd.replace("bat_dellink_", "", 1)
+        link_num, _, bname = raw_cd.partition("_")
+        if bname in data.get("batches", {}):
+            data["batches"][bname][f"msg_id_{link_num}"] = None
+            save_data(data)
+            await query.edit_message_text(f"✅ Link {link_num} for Batch '{bname}' has been successfully deleted/removed!", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
+        return ConversationHandler.END
 
     if cd.startswith("bat_usesaved_"):
         bname = cd.replace("bat_usesaved_", "", 1)
@@ -3116,6 +3148,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).post_stop(post_stop).build()
 
     conv = ConversationHandler(
+        # Note: Allowed matching 'bat_dellink_' in callback query patterns
         entry_points=[CallbackQueryHandler(callback_handler, pattern="^(?!(color_|sbcol_|confirm_broadcast|cancel_broadcast|cancel_state)).*$")],
         states={
             SET_DUMP_CHANNEL: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_set_dump_channel)],
@@ -3204,7 +3237,7 @@ def main():
     print("\n[+] Advanced Bot Architecture Initialized Successfully.")
     print("[+] Dump Channel Native Forward Routing Protocol Active.")
     print("[+] Sub-Bot Strict Priority Broadcast System Active...")
-    print("[+] Poster Maker Button Color Fix Deployed Successfully.")
+    print("[+] Link Deletion UI Feature Loaded.")
     print("[+] Auto-Restore Core Module & Logger Services Validated.\n")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
