@@ -118,8 +118,9 @@ BUTTON_COLOR_STYLES = {
     UB_ADD_2FA, UB_ADD_STRING, UB_ADD_BULK, UB_ADD_FILE, UB_RENAME,
     SB_ADD_TOKEN, SB_ADD_NAME, BATCH_ASSIGN_BOT, UB_NEW_BATCH_NAME, UB_ADD_ADMIN,
     SET_DUMP_CHANNEL, POSTER_MSG, POSTER_BTN_COUNT, POSTER_BTN_NAME, POSTER_BTN_LINK, 
-    POSTER_BTN_COLOR, BATCH_CONFIG_LINK_3, BATCH_ADDBOT_TOKEN, BATCH_ADDBOT_NAME, BAT_SET_DUMP_CHANNEL
-) = range(64) 
+    POSTER_BTN_COLOR, BATCH_CONFIG_LINK_3, BATCH_ADDBOT_TOKEN, BATCH_ADDBOT_NAME, BAT_SET_DUMP_CHANNEL,
+    UB_GLOBAL_NEW_BATCH, UB_SET_CUSTOM_NAME
+) = range(66) 
 
 DEFAULT_DATA = {
     "configured": False,
@@ -295,12 +296,13 @@ def extract_msg_id_from_link(link: str) -> Optional[int]:
     except:
         return None
 
-def _save_userbot(session_str: str, alias: str = "New Account", batch: str = "Unused") -> None:
+def _save_userbot(session_str: str, alias: str = "New Account", batch: str = "Unused", real_name: str = "Unknown") -> None:
     data = load_data()
     ub_id = hashlib.md5(session_str.encode()).hexdigest()[:10]
     data.setdefault("userbots", {})[ub_id] = {
         "session": session_str,
         "alias": alias,
+        "real_name": real_name,
         "batch": batch,
         "status": "active",
         "is_offline": False,
@@ -567,12 +569,22 @@ def userbots_keyboard() -> InlineKeyboardMarkup:
     batches = data.get("userbot_batches", ["Used", "Unused", "Fresh", "Admin", "Unauthorized"])
     kb = []
     for b in batches: kb.append([InlineKeyboardButton(f"📁 {b} Accounts", callback_data=f"ub_bview_{b}")])
+    kb.append([InlineKeyboardButton("➕ Create Category", callback_data="ub_create_cat"), InlineKeyboardButton("➖ Remove Category", callback_data="ub_remove_cat_menu")])
     kb.append([InlineKeyboardButton("➕ Add Account", callback_data="ub_add_menu"), InlineKeyboardButton("🔄 Refresh All", callback_data="ub_refresh")])
     kb.append([InlineKeyboardButton("📥 Get Latest DMs (All Accounts)", callback_data="ub_get_all_dms")])
     kb.append([InlineKeyboardButton("🔴 Switch OFF Accounts", callback_data="ub_global_off"), InlineKeyboardButton("🟢 Switch ON Accounts", callback_data="ub_global_on")])
     kb.append([InlineKeyboardButton("🤖 Check SpamBot (ALL)", callback_data="ub_spambot_all"), InlineKeyboardButton("🛑 Terminate Other Sessions", callback_data="ub_term_all")])
     kb.append([InlineKeyboardButton("📥 Backup All Sessions", callback_data="ub_backup_all")])
     kb.append([InlineKeyboardButton("🔙 Back to Main Menu", callback_data="main_menu")])
+    return InlineKeyboardMarkup(kb)
+
+def ub_remove_cat_keyboard() -> InlineKeyboardMarkup:
+    data = load_data()
+    batches = data.get("userbot_batches", [])
+    kb = []
+    for b in batches:
+        kb.append([InlineKeyboardButton(f"🗑️ Delete {b}", callback_data=f"ub_delcat_{b}")])
+    kb.append([InlineKeyboardButton("🔙 Back", callback_data="userbots_menu")])
     return InlineKeyboardMarkup(kb)
 
 def userbot_batch_view_keyboard(batch: str) -> InlineKeyboardMarkup:
@@ -583,7 +595,8 @@ def userbot_batch_view_keyboard(batch: str) -> InlineKeyboardMarkup:
         if info.get("batch", "Unused") == batch:
             status = "🔴" if info.get("status") != "active" else ("💤" if info.get("is_offline") else "🟢")
             bc = "📡" if info.get("is_broadcasting") else ""
-            btn_text = f"{status} {idx}. {info.get('alias', 'Account')} {bc}"
+            real_n = info.get("real_name", "Unknown")
+            btn_text = f"{status} {idx}. {info.get('alias', 'Account')} (Real: {real_n}) {bc}"
             kb.append([InlineKeyboardButton(btn_text, callback_data=f"ub_view_{ub_id}")])
             idx += 1
     kb.append([InlineKeyboardButton("🔙 Back to Manager", callback_data="userbots_menu")])
@@ -1748,6 +1761,22 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("✅ All valid accounts are now ONLINE 🟢", reply_markup=userbots_keyboard())
         return ConversationHandler.END
 
+    if cd == "ub_create_cat":
+        await query.edit_message_text("✍️ Send a name for the new Category (Batch):", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return UB_GLOBAL_NEW_BATCH
+        
+    if cd == "ub_remove_cat_menu":
+        await query.edit_message_text("🗑️ Select a Category to remove (Accounts inside won't be deleted, you can move them later):", parse_mode="HTML", reply_markup=ub_remove_cat_keyboard())
+        return ConversationHandler.END
+        
+    if cd.startswith("ub_delcat_"):
+        cat = cd.replace("ub_delcat_", "")
+        if cat in data.get("userbot_batches", []):
+            data["userbot_batches"].remove(cat)
+            save_data(data)
+        await query.edit_message_text(f"✅ Category '{cat}' removed successfully.", parse_mode="HTML", reply_markup=userbots_keyboard())
+        return ConversationHandler.END
+
     if cd.startswith("ub_bview_"):
         batch = cd.replace("ub_bview_", "")
         active, dead, offline = 0, 0, 0
@@ -1762,40 +1791,42 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     if cd == "ub_add_menu":
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("♻️ Used", callback_data="ub_addbatch_Used"), InlineKeyboardButton("📦 Unused", callback_data="ub_addbatch_Unused")],
-            [InlineKeyboardButton("📁 Fresh", callback_data="ub_addbatch_Fresh"), InlineKeyboardButton("🛡️ Admin", callback_data="ub_addbatch_Admin")],
-            [InlineKeyboardButton("🚫 Unauthorized", callback_data="ub_addbatch_Unauthorized")],
-            [InlineKeyboardButton("🔙 Cancel", callback_data="userbots_menu")]
-        ])
-        await query.edit_message_text("➕ <b>Add Userbot Account</b>\n\n📂 <b>First, choose the Batch</b> where this account(s) should be placed:", parse_mode="HTML", reply_markup=kb)
+        batches = data.get("userbot_batches", [])
+        kb = []
+        row = []
+        for b in batches:
+            row.append(InlineKeyboardButton(f"📁 {b}", callback_data=f"ub_addbatch_{b}"))
+            if len(row) == 2:
+                kb.append(row)
+                row = []
+        if row: kb.append(row)
+        kb.append([InlineKeyboardButton("🔙 Cancel", callback_data="userbots_menu")])
+        
+        await query.edit_message_text("➕ <b>Add Userbot Account</b>\n\n📂 <b>First, choose the Category/Batch</b> where this account(s) should be placed:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
         return ConversationHandler.END
         
     if cd.startswith("ub_addbatch_"):
-        batch = cd.split("_")[2]
+        batch = cd.replace("ub_addbatch_", "")
         context.user_data['pending_add_batch'] = batch
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📱 Login via Phone", callback_data="ub_add_phone"), InlineKeyboardButton("🔑 Session String", callback_data="ub_add_string")],
-            [InlineKeyboardButton("🗃️ Bulk Strings", callback_data="ub_add_bulk"), InlineKeyboardButton("📁 Upload File", callback_data="ub_add_file")],
-            [InlineKeyboardButton("🔙 Back", callback_data="userbots_menu")]
-        ])
-        await query.edit_message_text(f"Batch: {batch} 📁\n\nChoose a method to login:", parse_mode="HTML", reply_markup=kb)
-        return ConversationHandler.END
+        await query.edit_message_text(f"Batch: {batch} 📁\n\n✏️ Please send a <b>Custom Name</b> for the account(s) you are about to add (e.g., 'Target Account 1'):\n(Ye naam aapko dashboard me show karega)", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return UB_SET_CUSTOM_NAME
 
     if cd in ["ub_add_phone", "ub_add_string", "ub_add_bulk", "ub_add_file"]:
         context.user_data['pending_add_method'] = cd
         batch = context.user_data.get('pending_add_batch', 'Unused')
+        c_name = context.user_data.get('custom_name', 'Account')
+        
         if cd == "ub_add_phone":
-            await query.edit_message_text(f"Batch: {batch} 📁\n\n📱 Send the Phone Number in international format (e.g., +91...):", reply_markup=cancel_keyboard())
+            await query.edit_message_text(f"Batch: {batch} 📁\nName: {c_name}\n\n📱 Send the Phone Number in international format (e.g., +91...):", reply_markup=cancel_keyboard())
             return UB_ADD_PHONE
         elif cd == "ub_add_string":
-            await query.edit_message_text(f"Batch: {batch} 📁\n\n🔑 Send the Pyrogram Session String:", reply_markup=cancel_keyboard())
+            await query.edit_message_text(f"Batch: {batch} 📁\nName: {c_name}\n\n🔑 Send the Pyrogram Session String:", reply_markup=cancel_keyboard())
             return UB_ADD_STRING
         elif cd == "ub_add_bulk":
-            await query.edit_message_text(f"Batch: {batch} 📁\n\n🗃️ Send Bulk Session Strings (one per line):", reply_markup=cancel_keyboard())
+            await query.edit_message_text(f"Batch: {batch} 📁\nName base: {c_name}\n\n🗃️ Send Bulk Session Strings (one per line):", reply_markup=cancel_keyboard())
             return UB_ADD_BULK
         elif cd == "ub_add_file":
-            await query.edit_message_text(f"Batch: {batch} 📁\n\n📁 Upload a Pyrogram `.session` file OR `.txt` bulk backup file:", reply_markup=cancel_keyboard())
+            await query.edit_message_text(f"Batch: {batch} 📁\nName base: {c_name}\n\n📁 Upload a Pyrogram `.session` file OR `.txt` bulk backup file:", reply_markup=cancel_keyboard())
             return UB_ADD_FILE
     
     if cd.startswith("ub_view_"):
@@ -1816,14 +1847,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         batch = ub_info.get('batch', 'Unused')
         status = "🔴 Dead" if ub_info['status'] != "active" else ("💤 Offline" if ub_info.get('is_offline') else "🟢 Active")
         bc = "📡" if ub_info.get('is_broadcasting') else ""
-        txt = f"📱 <b>Account Dashboard:</b> {ub_info['alias']}\n\n📞 <b>Number:</b> <code>+{phone_str}</code>\n📁 <b>Batch:</b> {batch}\nStatus: {status} {bc}\n🤖 Spambot: {ub_info['spambot']}"
+        real_n = ub_info.get("real_name", "Unknown")
+        txt = f"📱 <b>Account Dashboard:</b> {ub_info['alias']}\n\n👤 <b>Real Name:</b> {real_n}\n📞 <b>Number:</b> <code>+{phone_str}</code>\n📁 <b>Batch:</b> {batch}\nStatus: {status} {bc}\n🤖 Spambot: {ub_info.get('spambot', 'Unknown')}"
         await query.edit_message_text(txt, parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
         return ConversationHandler.END
         
     if cd.startswith("ub_rename_"):
         ub_id = cd[10:]
         context.user_data['edit_ub_id'] = ub_id
-        await query.edit_message_text("✏️ Send the new Name/Alias for this account:", reply_markup=cancel_keyboard())
+        await query.edit_message_text("✏️ Send the new Custom Name/Alias for this account:", reply_markup=cancel_keyboard())
         return UB_RENAME
         
     if cd.startswith("ub_bcast_"):
@@ -1859,6 +1891,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 me = await client.get_me()
                 info["status"] = "active"
                 info["phone"] = me.phone_number or "Hidden/Unknown"
+                info["real_name"] = me.first_name or "Unknown"
                 active += 1
                 await client.disconnect()
             except Exception:
@@ -1997,7 +2030,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cd.startswith("ub_newbatch_"):
         ub_id = cd[12:]
         context.user_data['pending_ub_id'] = ub_id
-        await query.edit_message_text("✍️ Send a short name for the new Userbot Batch:", parse_mode="HTML", reply_markup=cancel_keyboard())
+        await query.edit_message_text("✍️ Send a short name for the new Userbot Category (Batch):", parse_mode="HTML", reply_markup=cancel_keyboard())
         return UB_NEW_BATCH_NAME
 
     if cd == "subbots_menu":
@@ -2498,6 +2531,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 15. USERBOT LOGIN (PYROGRAM SESSION GENERATORS)
 # ==============================================================================
 
+async def handle_ub_set_custom_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    custom_name = update.effective_message.text.strip()
+    context.user_data['custom_name'] = custom_name
+    batch = context.user_data.get('pending_add_batch', 'Unused')
+    
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📱 Login via Phone", callback_data="ub_add_phone"), InlineKeyboardButton("🔑 Session String", callback_data="ub_add_string")],
+        [InlineKeyboardButton("🗃️ Bulk Strings", callback_data="ub_add_bulk"), InlineKeyboardButton("📁 Upload File", callback_data="ub_add_file")],
+        [InlineKeyboardButton("🔙 Back", callback_data="userbots_menu")]
+    ])
+    await update.effective_message.reply_text(f"Batch: {batch} 📁\nCustom Name: <b>{custom_name}</b>\n\nChoose a method to login:", parse_mode="HTML", reply_markup=kb)
+    return ConversationHandler.END
+
 async def handle_ub_add_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone = update.effective_message.text.strip()
     msg = await update.effective_message.reply_text("⏳ Sending code...")
@@ -2524,11 +2570,16 @@ async def handle_ub_add_code(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         await client.sign_in(phone, phone_code_hash, code)
         session_str = await client.export_session_string()
+        
+        me = await client.get_me()
+        real_name = me.first_name if me.first_name else "Unknown"
+        custom_name = context.user_data.get('custom_name', real_name)
+        
         await client.disconnect()
-        _save_userbot(session_str, alias=phone, batch=batch)
+        _save_userbot(session_str, alias=custom_name, batch=batch, real_name=real_name)
         
         ub_id = hashlib.md5(session_str.encode()).hexdigest()[:10]
-        asyncio.create_task(start_userbot_listener(ub_id, session_str, phone))
+        asyncio.create_task(start_userbot_listener(ub_id, session_str, custom_name))
         
         await update.effective_message.reply_text(f"✅ Logged in successfully!\nAccount added to batch: <b>{batch}</b>", parse_mode="HTML", reply_markup=userbots_keyboard())
         return ConversationHandler.END
@@ -2548,11 +2599,16 @@ async def handle_ub_add_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await client.check_password(pwd)
         session_str = await client.export_session_string()
+        
+        me = await client.get_me()
+        real_name = me.first_name if me.first_name else "Unknown"
+        custom_name = context.user_data.get('custom_name', real_name)
+        
         await client.disconnect()
-        _save_userbot(session_str, alias=phone, batch=batch)
+        _save_userbot(session_str, alias=custom_name, batch=batch, real_name=real_name)
         
         ub_id = hashlib.md5(session_str.encode()).hexdigest()[:10]
-        asyncio.create_task(start_userbot_listener(ub_id, session_str, phone))
+        asyncio.create_task(start_userbot_listener(ub_id, session_str, custom_name))
         
         await update.effective_message.reply_text(f"✅ Logged in successfully with 2FA!\nAccount added to batch: <b>{batch}</b>", parse_mode="HTML", reply_markup=userbots_keyboard())
         return ConversationHandler.END
@@ -2568,12 +2624,15 @@ async def handle_ub_add_string(update: Update, context: ContextTypes.DEFAULT_TYP
         client = Client(name="test", session_string=session_str, api_id=API_ID, api_hash=API_HASH, in_memory=True)
         await client.connect()
         me = await client.get_me()
+        
+        real_name = me.first_name if me.first_name else "Imported"
+        custom_name = context.user_data.get('custom_name', real_name)
+        
         await client.disconnect()
-        first_name = getattr(me, 'first_name', None) if me else "Imported"
-        alias = first_name or "Imported Account"
-        _save_userbot(session_str, alias=alias, batch=batch)
+        _save_userbot(session_str, alias=custom_name, batch=batch, real_name=real_name)
+        
         ub_id = hashlib.md5(session_str.encode()).hexdigest()[:10]
-        asyncio.create_task(start_userbot_listener(ub_id, session_str, alias))
+        asyncio.create_task(start_userbot_listener(ub_id, session_str, custom_name))
         
         await update.effective_message.reply_text(f"✅ Session string imported successfully!\nAccount added to batch: <b>{batch}</b>", parse_mode="HTML", reply_markup=userbots_keyboard())
     except Exception as e:
@@ -2583,6 +2642,8 @@ async def handle_ub_add_string(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_ub_add_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     strings = update.effective_message.text.strip().split("\n")
     batch = context.user_data.get("pending_add_batch", "Unused")
+    base_custom_name = context.user_data.get('custom_name', "Bulk")
+    
     msg = await update.effective_message.reply_text("⏳ Processing bulk strings...")
     success, failed = 0, 0
     for s in strings:
@@ -2592,12 +2653,13 @@ async def handle_ub_add_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE)
             client = Client(name="test", session_string=s, api_id=API_ID, api_hash=API_HASH, in_memory=True)
             await client.connect()
             me = await client.get_me()
+            real_name = me.first_name if me.first_name else str(success+1)
+            custom_name = f"{base_custom_name}_{success+1}"
             await client.disconnect()
-            first_name = getattr(me, 'first_name', None) if me else str(success+1)
-            alias = f"Bulk_{first_name}"
-            _save_userbot(s, alias=alias, batch=batch)
+            
+            _save_userbot(s, alias=custom_name, batch=batch, real_name=real_name)
             ub_id = hashlib.md5(s.encode()).hexdigest()[:10]
-            asyncio.create_task(start_userbot_listener(ub_id, s, alias))
+            asyncio.create_task(start_userbot_listener(ub_id, s, custom_name))
             success += 1
         except Exception: failed += 1
     await msg.edit_text(f"✅ Bulk Import Complete.\n\n🟢 Success: {success}\n🔴 Failed: {failed}\n\n(Added to batch: <b>{batch}</b>)", parse_mode="HTML", reply_markup=userbots_keyboard())
@@ -2606,6 +2668,8 @@ async def handle_ub_add_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def handle_ub_add_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.effective_message.document
     batch = context.user_data.get("pending_add_batch", "Unused")
+    base_custom_name = context.user_data.get('custom_name', "Import")
+    
     if not doc:
         await update.effective_message.reply_text("❌ No file attached.", parse_mode="HTML", reply_markup=cancel_keyboard())
         return UB_ADD_FILE
@@ -2631,12 +2695,13 @@ async def handle_ub_add_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     client = Client(name="test", session_string=s, api_id=API_ID, api_hash=API_HASH, in_memory=True)
                     await client.connect()
                     me = await client.get_me()
+                    real_name = me.first_name if me.first_name else str(success+1)
+                    custom_name = f"{base_custom_name}_{success+1}"
                     await client.disconnect()
-                    first_name = getattr(me, 'first_name', None) if me else str(success+1)
-                    alias = f"Restored_{first_name}"
-                    _save_userbot(s, alias=alias, batch=batch)
+                    
+                    _save_userbot(s, alias=custom_name, batch=batch, real_name=real_name)
                     ub_id = hashlib.md5(s.encode()).hexdigest()[:10]
-                    asyncio.create_task(start_userbot_listener(ub_id, s, alias))
+                    asyncio.create_task(start_userbot_listener(ub_id, s, custom_name))
                     success += 1
                 except: failed += 1
             await msg.edit_text(f"✅ Bulk File Auto-Restore Complete.\n\n🟢 Success: {success}\n🔴 Failed: {failed}\n\n(Added to batch: <b>{batch}</b>)", reply_markup=userbots_keyboard())
@@ -2651,11 +2716,13 @@ async def handle_ub_add_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
             client = Client(name=path.replace(".session",""), api_id=API_ID, api_hash=API_HASH)
             await client.connect()
             session_str = await client.export_session_string()
+            me = await client.get_me()
+            real_name = me.first_name if me.first_name else "Unknown"
             await client.disconnect()
-            alias = doc.file_name
-            _save_userbot(session_str, alias=alias, batch=batch)
+            
+            _save_userbot(session_str, alias=base_custom_name, batch=batch, real_name=real_name)
             ub_id = hashlib.md5(session_str.encode()).hexdigest()[:10]
-            asyncio.create_task(start_userbot_listener(ub_id, session_str, alias))
+            asyncio.create_task(start_userbot_listener(ub_id, session_str, base_custom_name))
             
             await update.effective_message.reply_text(f"✅ Session file loaded and imported successfully!\nAccount added to batch: <b>{batch}</b>", parse_mode="HTML", reply_markup=userbots_keyboard())
         except Exception as e:
@@ -2674,7 +2741,7 @@ async def handle_ub_rename(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ub_id in data["userbots"]:
         data["userbots"][ub_id]["alias"] = new_alias
         save_data(data)
-    await update.effective_message.reply_text("✅ Alias updated!", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
+    await update.effective_message.reply_text("✅ Custom Alias updated!", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
     return ConversationHandler.END
 
 async def handle_ub_new_batch_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2689,14 +2756,30 @@ async def handle_ub_new_batch_name(update: Update, context: ContextTypes.DEFAULT
     data = load_data()
     
     if batch_name not in data.get("userbot_batches", []):
-        data.setdefault("userbot_batches", []).append(batch_name)
+        data.setdefault("userbot_batches", []).insert(0, batch_name)
         
     if ub_id and ub_id in data.get("userbots", {}):
         data["userbots"][ub_id]["batch"] = batch_name
         
     save_data(data)
     
-    await update.effective_message.reply_text(f"✅ New Batch '{batch_name}' created and assigned to this account!", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
+    await update.effective_message.reply_text(f"✅ New Category '{batch_name}' created and assigned to this account!", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
+    return ConversationHandler.END
+
+async def handle_ub_global_new_batch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cat_name = update.effective_message.text.strip()
+    cat_name = re.sub(r'[^a-zA-Z0-9\s]', '', cat_name).strip()
+    
+    if not cat_name:
+        await update.effective_message.reply_text("❌ Invalid name. Try again:", reply_markup=cancel_keyboard())
+        return UB_GLOBAL_NEW_BATCH
+        
+    data = load_data()
+    if cat_name not in data.get("userbot_batches", []):
+        data.setdefault("userbot_batches", []).insert(0, cat_name)
+        save_data(data)
+        
+    await update.effective_message.reply_text(f"✅ New Category '{cat_name}' created and added to the top!", parse_mode="HTML", reply_markup=userbots_keyboard())
     return ConversationHandler.END
 
 async def handle_sb_add_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3401,6 +3484,11 @@ def main():
             SAVED_AD_BTN_NAME: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, saved_ad_receive_btn_name)],
             SAVED_AD_BTN_LINK: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, saved_ad_receive_btn_link)],
             SAVED_AD_BTN_COLOR: [CallbackQueryHandler(saved_ad_receive_btn_color, pattern="^color_")],
+            
+            # --- USERBOT DYNAMIC CREATION & CUSTOM NAMING STATES ---
+            UB_GLOBAL_NEW_BATCH: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_ub_global_new_batch)],
+            UB_SET_CUSTOM_NAME: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_ub_set_custom_name)],
+            
             UB_ADD_PHONE: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_ub_add_phone)],
             UB_ADD_CODE: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_ub_add_code)],
             UB_ADD_2FA: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_ub_add_2fa)],
@@ -3450,7 +3538,8 @@ def main():
     print("[+] Native Asyncio Engine Loaded (JobQueue Disabled).")
     print("[+] Pending Tasks Crash Handler Fixed (Safe Stop).")
     print("[+] Auto-Restore Core Module & Logger Services Validated.")
-    print("[+] Random Intervals & Global Priority Override Enabled.\n")
+    print("[+] Random Intervals & Global Priority Override Enabled.")
+    print("[+] Dynamic Categories & Custom Userbot Naming Implemented.\n")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
