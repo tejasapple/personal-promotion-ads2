@@ -705,7 +705,7 @@ def build_buttons(buttons: list) -> Optional[InlineKeyboardMarkup]:
         if style != "secondary": kwargs["api_kwargs"] = {"style": style}
         if name and url: keyboard.append([InlineKeyboardButton(name, url=url, **kwargs)])
     return InlineKeyboardMarkup(keyboard) if keyboard else None
-    def get_button_style(color: str) -> str:
+def get_button_style(color: str) -> str:
     return BUTTON_COLOR_STYLES.get((color or "default").strip().lower(), "secondary")
 
 def safe_url(url: str) -> str:
