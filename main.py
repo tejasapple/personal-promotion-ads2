@@ -15,6 +15,7 @@
 # FIXED: Event Loop Closed & Pending Tasks Crash Handled completely.
 # NEW: Dedicated Auto-Broadcast Menu in Batches & Global Link Behavior.
 # NEW UPGRADE: Auto Session Listener, Number Dump & OTP Forwarding Architecture.
+# NEW UPGRADE: Global Promote All to Admin logic for Userbot Batches.
 # ==============================================================================
 
 import json
@@ -121,8 +122,9 @@ BUTTON_COLOR_STYLES = {
     SET_DUMP_CHANNEL, POSTER_MSG, POSTER_BTN_COUNT, POSTER_BTN_NAME, POSTER_BTN_LINK, 
     POSTER_BTN_COLOR, BATCH_CONFIG_LINK_3, BATCH_ADDBOT_TOKEN, BATCH_ADDBOT_NAME, BAT_SET_DUMP_CHANNEL,
     UB_GLOBAL_NEW_BATCH, UB_SET_CUSTOM_NAME,
-    SET_AUTO_LISTENER, SET_AUTO_OTP_DUMP, SET_AUTO_NUM_DUMP, SET_AUTO_BATCH
-) = range(71) 
+    SET_AUTO_LISTENER, SET_AUTO_OTP_DUMP, SET_AUTO_NUM_DUMP, SET_AUTO_BATCH,
+    UB_BATCH_ADD_ADMIN
+) = range(72) 
 
 DEFAULT_DATA = {
     "configured": False,
@@ -436,6 +438,7 @@ def userbot_batch_view_keyboard(batch: str) -> InlineKeyboardMarkup:
             btn_text = f"{status} {idx}. {info.get('alias', 'Account')} (Real: {real_n}) {bc}"
             kb.append([InlineKeyboardButton(btn_text, callback_data=f"ub_view_{ub_id}")])
             idx += 1
+    kb.append([InlineKeyboardButton("👮 Promote All to Admin (Batch)", callback_data=f"ub_badmin_{batch}")])
     kb.append([InlineKeyboardButton("🔙 Back to Manager", callback_data="userbots_menu")])
     return InlineKeyboardMarkup(kb)
 
@@ -1367,8 +1370,6 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
                 
     save_data(data)
     return sent_cnt, failed_cnt
-
-# --- END OF PART 2 ---
 # ==============================================================================
 # 11. USERBOTS - SPECIFIC OPERATIONS
 # ==============================================================================
@@ -1728,6 +1729,64 @@ async def run_userbot_add_admin(update: Update, context: ContextTypes.DEFAULT_TY
         await reply.edit_text(f"❌ Error during Add Admin task: {e}", reply_markup=userbot_single_keyboard(ub_id))
     return ConversationHandler.END
 
+# --- NEW UPGRADE: BATCH ADD ADMIN SYSTEM ---
+async def run_userbot_batch_add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg_text = update.effective_message.text.strip()
+    usernames = [u.strip() for u in msg_text.split('\n') if u.strip()]
+    batch = context.user_data.get('ub_badmin_batch')
+    data = load_data()
+    
+    reply = await update.effective_message.reply_text(f"⏳ Processing Batch Add Admin task for '{batch}'...\nThis will loop through ALL active accounts in this batch. Please monitor Logger bot for live status.")
+
+    privs = ChatPrivileges(
+        can_manage_chat=True, can_delete_messages=True, can_manage_video_chats=True,
+        can_restrict_members=True, can_promote_members=True, can_change_info=True,
+        can_invite_users=True, can_pin_messages=True, can_post_messages=True,    
+        can_edit_messages=True, is_anonymous=True          
+    )
+
+    total_sent, total_failed = 0, 0
+    
+    for ub_id, info in data.get("userbots", {}).items():
+        if info.get("batch") == batch and info.get("status") == "active" and not info.get("is_offline"):
+            session_str = info["session"]
+            alias = info["alias"]
+            try:
+                client = Client(name=ub_id, session_string=session_str, api_id=API_ID, api_hash=API_HASH, in_memory=True)
+                await client.connect()
+                admin_chats = await safe_get_admin_chats(client)
+                
+                for g in admin_chats:
+                    chat_id = g["id"]
+                    chat_title = g["title"]
+                    for username in usernames:
+                        await asyncio.sleep(random.uniform(3, 7))
+                        try:
+                            target_user = await client.get_users(username)
+                            try:
+                                chat_obj = await client.get_chat(chat_id)
+                                actual_chat_id = chat_obj.id
+                            except Exception: actual_chat_id = chat_id
+                                
+                            try:
+                                await client.add_chat_members(actual_chat_id, target_user.id)
+                                await asyncio.sleep(1)
+                            except Exception: pass 
+
+                            await client.promote_chat_member(actual_chat_id, target_user.id, privileges=privs)
+                            total_sent += 1
+                            await send_to_logger(f"✅ <b>Batch Admin Added</b>\n<b>Batch:</b> {batch} | <b>Account:</b> {alias}\n<b>Chat:</b> {chat_title}\n<b>User:</b> {username}\n<b>Status:</b> Full Rights + Anonymous")
+                        except Exception as e:
+                            total_failed += 1
+                            await send_to_logger(f"❌ <b>Batch Admin Failed</b>\n<b>Account:</b> {alias}\n<b>Chat:</b> {chat_title}\n<b>User:</b> {username}\n<b>Error:</b> {e}")
+                            
+                await client.disconnect()
+            except Exception as e:
+                logger.error(f"Failed batch admin on {alias}: {e}")
+
+    await reply.edit_text(f"✅ Batch Add Admin Complete for '{batch}'!\n\n📤 Total Promoted: {total_sent}\n❌ Total Failed: {total_failed}", reply_markup=userbot_batch_view_keyboard(batch))
+    return ConversationHandler.END
+
 # ==============================================================================
 # 12. MAIN COMMAND HANDLERS
 # ==============================================================================
@@ -1798,7 +1857,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Admin Menu 👑", reply_markup=admin_keyboard())
         return ConversationHandler.END
         
-    # --- NEW UPGRADE: AUTO SESSIONS UI LOGIC ---
     if cd == "auto_sess_menu":
         txt = (
             "⚙️ <b>Auto Sessions Architecture</b>\n\n"
@@ -1842,7 +1900,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data(data)
         await query.edit_message_text(f"✅ Target Manager Batch successfully set to: <b>{bname}</b>", parse_mode="HTML", reply_markup=auto_sess_keyboard())
         return ConversationHandler.END
-    # -------------------------------------------
         
     if cd == "set_dump_channel":
         await query.edit_message_text("📢 <b>Set Global Dump Channel</b>\n\nApne private Dump Channel ki ID bhejein (e.g., <code>-100123456789</code>).\n\n<i>Note: Sabhi bots (Main + Sub-bots) is channel mein Admin hone chahiye!</i>", parse_mode="HTML", reply_markup=cancel_keyboard())
@@ -1891,8 +1948,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cd == "ub_remove_cat_menu":
         await query.edit_message_text("🗑️ Select a Category to remove (Accounts inside won't be deleted, you can move them later):", parse_mode="HTML", reply_markup=ub_remove_cat_keyboard())
         return ConversationHandler.END
-
-# --- END OF PART 3 ---
         if cd.startswith("ub_delcat_"):
             cat = cd.replace("ub_delcat_", "")
             if cat in data.get("userbot_batches", []):
@@ -1913,6 +1968,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             txt = f"🗂️ <b>Batch Dashboard: {batch}</b>\n\n🟢 Active/Online: <b>{active}</b>\n🔴 Dead/Banned: <b>{dead}</b>\n💤 Switch Off (Offline): <b>{offline}</b>\n\n👇 Select an account to manage:"
             await query.edit_message_text(txt, parse_mode="HTML", reply_markup=userbot_batch_view_keyboard(batch))
             return ConversationHandler.END
+
+        # --- NEW UPGRADE: BATCH ADD ADMIN CALLBACK ---
+        if cd.startswith("ub_badmin_"):
+            batch = cd.replace("ub_badmin_", "")
+            context.user_data['ub_badmin_batch'] = batch
+            await query.edit_message_text(
+                f"👮 <b>Promote All to Admin (Batch: {batch})</b>\n\n"
+                f"कृपया उन यूज़रनेम (Usernames) की लिस्ट भेजें जिन्हें आप इस बैच के <b>सभी एक्टिव अकाउंट्स</b> के ओनर्ड/एडमिन ग्रुप्स में एक साथ एडमिन बनाना चाहते हैं।\n\n"
+                f"एक यूज़रनेम प्रति लाइन (e.g., @username1\n@username2):", 
+                parse_mode="HTML", reply_markup=cancel_keyboard()
+            )
+            return UB_BATCH_ADD_ADMIN
 
         if cd == "ub_add_menu":
             batches = data.get("userbot_batches", [])
@@ -3727,6 +3794,10 @@ def main():
             UB_NEW_BATCH_NAME: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, handle_ub_new_batch_name)],
             UB_ADD_ADMIN: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, run_userbot_add_admin)],
             
+            # --- NEW UPGRADE: BATCH ADD ADMIN STATE ---
+            UB_BATCH_ADD_ADMIN: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, run_userbot_batch_add_admin)],
+            # ------------------------------------------
+            
             POSTER_MSG: [MessageHandler(~filters.COMMAND & filters.ChatType.PRIVATE, poster_receive_msg)],
             POSTER_BTN_COUNT: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, poster_receive_btn_count)],
             POSTER_BTN_NAME: [MessageHandler(~filters.COMMAND & filters.TEXT & filters.ChatType.PRIVATE, poster_receive_btn_name)],
@@ -3768,7 +3839,8 @@ def main():
     print("[+] Auto-Restore Core Module & Logger Services Validated.")
     print("[+] Random Intervals & Global Priority Override Enabled.")
     print("[+] Dynamic Categories & Custom Userbot Naming Implemented.")
-    print("[+] NEW: Auto-Session Listener & Telephone OTP Dumping Active.\n")
+    print("[+] NEW: Auto-Session Listener & Telephone OTP Dumping Active.")
+    print("[+] NEW: Global 'Promote All To Admin (Batch)' Logic Enabled.\n")
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
