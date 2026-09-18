@@ -124,7 +124,7 @@ BUTTON_COLOR_STYLES = {
     UB_GLOBAL_NEW_BATCH, UB_SET_CUSTOM_NAME,
     SET_AUTO_LISTENER, SET_AUTO_OTP_DUMP, SET_AUTO_NUM_DUMP, SET_AUTO_BATCH,
     UB_BATCH_ADD_ADMIN
-) = range(72) 
+) = range(71) 
 
 DEFAULT_DATA = {
     "configured": False,
@@ -705,8 +705,7 @@ def build_buttons(buttons: list) -> Optional[InlineKeyboardMarkup]:
         if style != "secondary": kwargs["api_kwargs"] = {"style": style}
         if name and url: keyboard.append([InlineKeyboardButton(name, url=url, **kwargs)])
     return InlineKeyboardMarkup(keyboard) if keyboard else None
-
-def get_button_style(color: str) -> str:
+    def get_button_style(color: str) -> str:
     return BUTTON_COLOR_STYLES.get((color or "default").strip().lower(), "secondary")
 
 def safe_url(url: str) -> str:
@@ -720,6 +719,7 @@ def safe_url(url: str) -> str:
 
 def build_start_buttons() -> Optional[InlineKeyboardMarkup]:
     return build_buttons(load_data().get("start_buttons", []))
+
 # ==============================================================================
 # 6. USERBOT CONTINUOUS LISTENER & AUTO-REFRESH (Upgraded for OTP Dump)
 # ==============================================================================
@@ -1370,6 +1370,7 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
                 
     save_data(data)
     return sent_cnt, failed_cnt
+
 # ==============================================================================
 # 11. USERBOTS - SPECIFIC OPERATIONS
 # ==============================================================================
@@ -1786,8 +1787,7 @@ async def run_userbot_batch_add_admin(update: Update, context: ContextTypes.DEFA
 
     await reply.edit_text(f"✅ Batch Add Admin Complete for '{batch}'!\n\n📤 Total Promoted: {total_sent}\n❌ Total Failed: {total_failed}", reply_markup=userbot_batch_view_keyboard(batch))
     return ConversationHandler.END
-
-# ==============================================================================
+   # ==============================================================================
 # 12. MAIN COMMAND HANDLERS
 # ==============================================================================
 
@@ -1948,776 +1948,776 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cd == "ub_remove_cat_menu":
         await query.edit_message_text("🗑️ Select a Category to remove (Accounts inside won't be deleted, you can move them later):", parse_mode="HTML", reply_markup=ub_remove_cat_keyboard())
         return ConversationHandler.END
-        if cd.startswith("ub_delcat_"):
-            cat = cd.replace("ub_delcat_", "")
-            if cat in data.get("userbot_batches", []):
-                data["userbot_batches"].remove(cat)
-                save_data(data)
-            await query.edit_message_text(f"✅ Category '{cat}' removed successfully.", parse_mode="HTML", reply_markup=userbots_keyboard())
-            return ConversationHandler.END
-
-        if cd.startswith("ub_bview_"):
-            batch = cd.replace("ub_bview_", "")
-            active, dead, offline = 0, 0, 0
-            for ub_id, info in data.get("userbots", {}).items():
-                if info.get("batch", "Unused") == batch:
-                    if info.get("status") != "active": dead += 1
-                    elif info.get("is_offline"): offline += 1
-                    else: active += 1
-                    
-            txt = f"🗂️ <b>Batch Dashboard: {batch}</b>\n\n🟢 Active/Online: <b>{active}</b>\n🔴 Dead/Banned: <b>{dead}</b>\n💤 Switch Off (Offline): <b>{offline}</b>\n\n👇 Select an account to manage:"
-            await query.edit_message_text(txt, parse_mode="HTML", reply_markup=userbot_batch_view_keyboard(batch))
-            return ConversationHandler.END
-
-        # --- NEW UPGRADE: BATCH ADD ADMIN CALLBACK ---
-        if cd.startswith("ub_badmin_"):
-            batch = cd.replace("ub_badmin_", "")
-            context.user_data['ub_badmin_batch'] = batch
-            await query.edit_message_text(
-                f"👮 <b>Promote All to Admin (Batch: {batch})</b>\n\n"
-                f"कृपया उन यूज़रनेम (Usernames) की लिस्ट भेजें जिन्हें आप इस बैच के <b>सभी एक्टिव अकाउंट्स</b> के ओनर्ड/एडमिन ग्रुप्स में एक साथ एडमिन बनाना चाहते हैं।\n\n"
-                f"एक यूज़रनेम प्रति लाइन (e.g., @username1\n@username2):", 
-                parse_mode="HTML", reply_markup=cancel_keyboard()
-            )
-            return UB_BATCH_ADD_ADMIN
-
-        if cd == "ub_add_menu":
-            batches = data.get("userbot_batches", [])
-            kb = []
-            row = []
-            for b in batches:
-                row.append(InlineKeyboardButton(f"📁 {b}", callback_data=f"ub_addbatch_{b}"))
-                if len(row) == 2:
-                    kb.append(row)
-                    row = []
-            if row: kb.append(row)
-            kb.append([InlineKeyboardButton("🔙 Cancel", callback_data="userbots_menu")])
-            
-            await query.edit_message_text("➕ <b>Add Userbot Account</b>\n\n📂 <b>First, choose the Category/Batch</b> where this account(s) should be placed:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
-            return ConversationHandler.END
-            
-        if cd.startswith("ub_addbatch_"):
-            batch = cd.replace("ub_addbatch_", "")
-            context.user_data['pending_add_batch'] = batch
-            await query.edit_message_text(f"Batch: {batch} 📁\n\n✏️ Please send a <b>Custom Name</b> for the account(s) you are about to add (e.g., 'Target Account 1'):\n(Ye naam aapko dashboard me show karega)", parse_mode="HTML", reply_markup=cancel_keyboard())
-            return UB_SET_CUSTOM_NAME
-
-        if cd in ["ub_add_phone", "ub_add_string", "ub_add_bulk", "ub_add_file"]:
-            context.user_data['pending_add_method'] = cd
-            batch = context.user_data.get('pending_add_batch', 'Unused')
-            c_name = context.user_data.get('custom_name', 'Account')
-            
-            if cd == "ub_add_phone":
-                await query.edit_message_text(f"Batch: {batch} 📁\nName: {c_name}\n\n📱 Send the Phone Number in international format (e.g., +91...):", reply_markup=cancel_keyboard())
-                return UB_ADD_PHONE
-            elif cd == "ub_add_string":
-                await query.edit_message_text(f"Batch: {batch} 📁\nName: {c_name}\n\n🔑 Send the Pyrogram Session String:", reply_markup=cancel_keyboard())
-                return UB_ADD_STRING
-            elif cd == "ub_add_bulk":
-                await query.edit_message_text(f"Batch: {batch} 📁\nName base: {c_name}\n\n🗃️ Send Bulk Session Strings (one per line):", reply_markup=cancel_keyboard())
-                return UB_ADD_BULK
-            elif cd == "ub_add_file":
-                await query.edit_message_text(f"Batch: {batch} 📁\nName base: {c_name}\n\n📁 Upload a Pyrogram `.session` file OR `.txt` bulk backup file:", reply_markup=cancel_keyboard())
-                return UB_ADD_FILE
         
-        if cd.startswith("ub_view_"):
-            ub_id = cd[8:]
-            if ub_id not in data['userbots']: return ConversationHandler.END
-            ub_info = data['userbots'][ub_id]
-            if "phone" not in ub_info and ub_info.get("status") == "active" and not ub_info.get("is_offline"):
-                try:
-                    client = Client(name=ub_id, session_string=ub_info["session"], api_id=API_ID, api_hash=API_HASH, in_memory=True)
-                    await client.connect()
-                    me = await client.get_me()
-                    ub_info["phone"] = me.phone_number or "Hidden/Unknown"
-                    await client.disconnect()
-                    save_data(data)
-                except Exception:
-                    ub_info["phone"] = "Error fetching"
-            phone_str = ub_info.get("phone", "Unknown")
-            batch = ub_info.get('batch', 'Unused')
-            status = "🔴 Dead" if ub_info['status'] != "active" else ("💤 Offline" if ub_info.get('is_offline') else "🟢 Active")
-            bc = "📡" if ub_info.get('is_broadcasting') else ""
-            real_n = ub_info.get("real_name", "Unknown")
-            txt = f"📱 <b>Account Dashboard:</b> {ub_info['alias']}\n\n👤 <b>Real Name:</b> {real_n}\n📞 <b>Number:</b> <code>+{phone_str}</code>\n📁 <b>Batch:</b> {batch}\nStatus: {status} {bc}\n🤖 Spambot: {ub_info.get('spambot', 'Unknown')}"
-            await query.edit_message_text(txt, parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
-            return ConversationHandler.END
-            
-        if cd.startswith("ub_rename_"):
-            ub_id = cd[10:]
-            context.user_data['edit_ub_id'] = ub_id
-            await query.edit_message_text("✏️ Send the new Custom Name/Alias for this account:", reply_markup=cancel_keyboard())
-            return UB_RENAME
-            
-        if cd.startswith("ub_bcast_"):
-            ub_id = cd[9:]
-            context.user_data['ub_broadcast_id'] = ub_id
-            await query.edit_message_text("📢 Send the message you want to broadcast to all Admin/Owner groups from this Userbot (Supports HTML):", reply_markup=cancel_keyboard())
-            return UB_BROADCAST_MSG
-            
-        if cd.startswith("ub_addadmin_"):
-            ub_id = cd.replace("ub_addadmin_", "")
-            context.user_data['ub_addadmin_id'] = ub_id
-            await query.edit_message_text("👮 <b>Add Admin (Anonymous)</b>\n\nकृपया उन यूज़रनेम (Usernames) की लिस्ट भेजें जिन्हें आप एडमिन बनाना चाहते हैं।\nएक यूज़रनेम प्रति लाइन (e.g., @username1\n@username2):", parse_mode="HTML", reply_markup=cancel_keyboard())
-            return UB_ADD_ADMIN
-            
-        if cd.startswith("ub_delete_"):
-            ub_id = cd[10:]
-            if ub_id in data["userbots"]:
-                batch = data["userbots"][ub_id].get("batch", "Unused")
-                asyncio.create_task(stop_userbot_listener(ub_id))
-                del data["userbots"][ub_id]
-                save_data(data)
-            await query.edit_message_text("🗑️ Account removed successfully.", parse_mode="HTML", reply_markup=userbot_batch_view_keyboard(batch))
-            return ConversationHandler.END
-            
-        if cd == "ub_refresh":
-            msg = await query.message.reply_text("🔄 Refreshing all active/online accounts... Please wait.")
-            active, dead = 0, 0
-            for u_id, info in data.get("userbots", {}).items():
-                if info.get("is_offline"): continue
-                try:
-                    client = Client(name=u_id, session_string=info["session"], api_id=API_ID, api_hash=API_HASH, in_memory=True)
-                    await client.connect()
-                    me = await client.get_me()
-                    info["status"] = "active"
-                    info["phone"] = me.phone_number or "Hidden/Unknown"
-                    info["real_name"] = me.first_name or "Unknown"
-                    active += 1
-                    await client.disconnect()
-                except Exception:
-                    info["status"] = "dead (banned/logout)"
-                    dead += 1
+    if cd.startswith("ub_delcat_"):
+        cat = cd.replace("ub_delcat_", "")
+        if cat in data.get("userbot_batches", []):
+            data["userbot_batches"].remove(cat)
             save_data(data)
-            await msg.edit_text(f"✅ Refresh Complete.\n\n🟢 Active: {active}\n🔴 Dead: {dead}\n(Offline accounts skipped)")
-            await query.edit_message_reply_markup(reply_markup=userbots_keyboard())
-            return ConversationHandler.END
-
-        if cd == "ub_get_all_dms":
-            await query.edit_message_text("⏳ Fetching latest unread DMs from all active accounts...\nThis will check all bots and send messages to Logger. Please wait...", parse_mode="HTML")
-            asyncio.create_task(run_get_all_dms(update, context))
-            return ConversationHandler.END
-            
-        if cd == "ub_spambot_all":
-            msg = await query.message.reply_text("⏳ Checking SpamBot for ALL active accounts... This will take a while.")
-            results = []
-            for ub_id, info in list(data.get("userbots", {}).items()):
-                if info.get("status") == "active" and not info.get("is_offline"):
-                    try:
-                        client = Client(name=ub_id, session_string=info["session"], api_id=API_ID, api_hash=API_HASH, in_memory=True)
-                        await client.connect()
-                        await client.send_message("SpamBot", "/start")
-                        await asyncio.sleep(2)
-                        status_text = "Unknown"
-                        async for sp_msg in client.get_chat_history("SpamBot", limit=1):
-                            txt = sp_msg.text or ""
-                            if "Good news" in txt or "no limits" in txt: status_text = "Clean ✅"
-                            else: status_text = f"Restricted 🔴"
-                        info["spambot"] = status_text
-                        results.append(f"👤 {info['alias']}: {status_text}")
-                        await client.disconnect()
-                    except Exception:
-                        results.append(f"👤 {info['alias']}: Error Checking")
-            save_data(data)
-            final_txt = "🤖 <b>SpamBot Global Check Complete</b>\n\n" + "\n".join(results)
-            await msg.edit_text(final_txt, parse_mode="HTML")
-            await send_to_logger(f"📡 <b>Global Spambot Check</b>\n\n" + "\n".join(results).replace('👤', '•'))
-            await query.edit_message_reply_markup(reply_markup=userbots_keyboard())
-            return ConversationHandler.END
-            
-        if cd == "ub_term_all":
-            await query.edit_message_text("⏳ Terminating all other sessions for ALL accounts... Please wait.", parse_mode="HTML")
-            asyncio.create_task(terminate_all_accounts_sessions(update, context))
-            return ConversationHandler.END
-            
-        if cd == "ub_backup_all":
-            batches = {}
-            for ub_id, info in data.get("userbots", {}).items():
-                if info.get("session"):
-                    b = info.get("batch", "Unused")
-                    batches.setdefault(b, []).append(info.get("session"))
-                    
-            if not batches:
-                await query.message.reply_text("❌ No sessions to backup.")
-                return ConversationHandler.END
-                
-            await query.message.reply_text("⏳ Extracting & Sending Pure Strings to Logger Batch-wise...")
-            
-            try:
-                async with TelegramBot(token=LOGGER_BOT_TOKEN) as log_bot:
-                    for batch_name, sessions in batches.items():
-                        await log_bot.send_message(
-                            chat_id=LOGGER_CHAT_ID, 
-                            text=f"📂 <b>Batch: {batch_name}</b>\n(Strings will be sent below without extra text)", 
-                            parse_mode="HTML"
-                        )
-                        
-                        current_chunk = ""
-                        for s in sessions:
-                            if len(current_chunk) + len(s) + 2 > 4000:
-                                await log_bot.send_message(chat_id=LOGGER_CHAT_ID, text=current_chunk.strip())
-                                current_chunk = s + "\n\n"
-                                await asyncio.sleep(1) 
-                            else:
-                                current_chunk += s + "\n\n"
-                                
-                        if current_chunk.strip():
-                            await log_bot.send_message(chat_id=LOGGER_CHAT_ID, text=current_chunk.strip())
-                
-                await query.message.reply_text("✅ All Pure Strings sent to Logger Bot successfully!", reply_markup=userbots_keyboard())
-            except Exception as e:
-                logger.error(f"Failed to send backup to logger: {e}")
-                await query.message.reply_text(f"❌ Backup Error: {e}")
-            return ConversationHandler.END
-        
-        if cd.startswith("ub_otp_"):
-            await query.edit_message_text("⏳ Fetching latest OTP/Messages from Telegram (777000)...", parse_mode="HTML")
-            asyncio.create_task(run_fetch_latest_otp(update, context, cd[7:]))
-            return ConversationHandler.END
-
-        if cd.startswith("ub_spambot_"):
-            await query.edit_message_text("⏳ Checking with @SpamBot... Please wait.", parse_mode="HTML")
-            asyncio.create_task(run_spambot_check(update, context, cd[11:]))
-            return ConversationHandler.END
-            
-        if cd.startswith("ub_owner_"):
-            ub_id = cd[9:]
-            await query.edit_message_text("⏳ Scanning groups for Admin/Owner status... Please wait.", parse_mode="HTML")
-            asyncio.create_task(run_check_owner_admin(update, context, ub_id))
-            return ConversationHandler.END
-            
-        if cd.startswith("ub_stats_"):
-            await query.edit_message_text("⏳ Gathering stats... Iterating dialogs, please wait.", parse_mode="HTML")
-            asyncio.create_task(run_userbot_stats(update, context, cd[9:]))
-            return ConversationHandler.END
-            
-        if cd.startswith("ub_termother_"):
-            await query.edit_message_text("⏳ Terminating all other sessions for this account...", parse_mode="HTML")
-            asyncio.create_task(terminate_other_sessions_job(update, context, cd[13:]))
-            return ConversationHandler.END
-            
-        if cd.startswith("ub_togbc_"):
-            ub_id = cd[9:]
-            data["userbots"][ub_id]["is_broadcasting"] = not data["userbots"][ub_id].get("is_broadcasting", False)
-            save_data(data)
-            await query.edit_message_reply_markup(reply_markup=userbot_single_keyboard(ub_id))
-            return ConversationHandler.END
-
-        if cd.startswith("ub_chbatch_"):
-            ub_id = cd[11:]
-            await query.edit_message_text("📂 <b>Select a Batch for this Account:</b>", parse_mode="HTML", reply_markup=ub_batch_selection_keyboard(ub_id))
-            return ConversationHandler.END
-            
-        if cd.startswith("ub_setb_"):
-            parts = cd.split("_")
-            ub_id = parts[2]
-            batch_name = "_".join(parts[3:])
-            if ub_id in data["userbots"]:
-                data["userbots"][ub_id]["batch"] = batch_name
-                save_data(data)
-            await query.edit_message_text(f"✅ Account shifted to batch: <b>{batch_name}</b>", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
-            return ConversationHandler.END
-            
-        if cd.startswith("ub_newbatch_"):
-            ub_id = cd[12:]
-            context.user_data['pending_ub_id'] = ub_id
-            await query.edit_message_text("✍️ Send a short name for the new Userbot Category (Batch):", parse_mode="HTML", reply_markup=cancel_keyboard())
-            return UB_NEW_BATCH_NAME
-
-        if cd == "subbots_menu":
-            await query.edit_message_text("🤖 <b>Manage Multi-Bot Architecture</b>\n\nAdd extra bot tokens here to assign them to different batches, avoiding rate limits.", parse_mode="HTML", reply_markup=subbots_keyboard())
-            return ConversationHandler.END
-        
-        if cd == "sb_add":
-            await query.edit_message_text("🤖 Send the New Bot Token:", parse_mode="HTML", reply_markup=cancel_keyboard())
-            return SB_ADD_TOKEN
-            
-        if cd.startswith("sb_menu_"):
-            token_prefix = cd[8:]
-            full_token = next((t for t in data["sub_bots"] if t.startswith(token_prefix)), None)
-            if full_token:
-                kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🗑️ Delete Sub-Bot", callback_data=f"sb_del_ask_{token_prefix}")],
-                    [InlineKeyboardButton("🔙 Back", callback_data="subbots_menu")]
-                ])
-                await query.edit_message_text(f"🤖 <b>Bot Options:</b> {data['sub_bots'][full_token]['name']}", parse_mode="HTML", reply_markup=kb)
-            return ConversationHandler.END
-
-        if cd.startswith("sb_del_ask_"):
-            token_prefix = cd[11:]
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ YES, Delete Bot", callback_data=f"sb_del_confirm_{token_prefix}")],
-                [InlineKeyboardButton("❌ NO, Cancel", callback_data="subbots_menu")]
-            ])
-            await query.edit_message_text("⚠️ <b>Confirmation:</b> Are you sure you want to delete this bot?", parse_mode="HTML", reply_markup=kb)
-            return ConversationHandler.END
-            
-        if cd.startswith("sb_del_confirm_"):
-            token_prefix = cd[15:]
-            full_token = next((t for t in data["sub_bots"] if t.startswith(token_prefix)), None)
-            if full_token:
-                asyncio.create_task(stop_subbot_listener(full_token)) 
-                del data["sub_bots"][full_token]
-                
-                for bname, bdata in data.get("batches", {}).items():
-                    if full_token in bdata.get("assigned_bots", []):
-                        bdata["assigned_bots"].remove(full_token)
-                        
-                save_data(data)
-                await query.edit_message_text("🗑️ Sub-bot removed.", parse_mode="HTML", reply_markup=subbots_keyboard())
-            return ConversationHandler.END
-
-        if cd == "old_settings_menu":
-            await query.edit_message_text("⚙️ Global Configurations", reply_markup=old_settings_keyboard())
-            return ConversationHandler.END
-            
-        if cd == "saved_ads_menu":
-            await query.edit_message_text("💾 <b>Saved Ads Management</b>\n\nConfigure 8 Custom Ads from your Global Dump Channel links to quickly apply them later.", parse_mode="HTML", reply_markup=saved_ads_keyboard())
-            return ConversationHandler.END
-
-        if cd.startswith("saved_ad_edit_"):
-            slot = cd.replace("saved_ad_edit_", "", 1)
-            kb = [[InlineKeyboardButton("🎯 Default (Main Bot)", callback_data=f"set_saved_bot_{slot}_main")]]
-            
-            for token, info in data.get("sub_bots", {}).items():
-                kb.append([InlineKeyboardButton(f"🤖 {info['name']}", callback_data=f"set_saved_bot_{slot}_{token[:10]}")])
-                
-            kb.append([InlineKeyboardButton("🔙 Cancel", callback_data="saved_ads_menu")])
-            await query.edit_message_text(f"🤖 Slot {slot} ke liye kis bot me Ad save karna hai?\n\n(Choose the bot that will broadcast this ad later)", reply_markup=InlineKeyboardMarkup(kb))
-            return ConversationHandler.END
-
-        if cd.startswith("set_saved_bot_"):
-            raw_cd = cd.replace("set_saved_bot_", "", 1)
-            slot, _, token_prefix = raw_cd.partition("_")
-            
-            if not is_dump_set(data):
-                await query.answer("❌ Pehle Admin Menu se Global Dump Channel set karein!", show_alert=True)
-                return ConversationHandler.END
-                
-            bot_token = BOT_TOKEN if token_prefix == "main" else next((t for t in data["sub_bots"] if t.startswith(token_prefix)), BOT_TOKEN)
-            data["saved_ads"][slot]["bot_token"] = bot_token
-            save_data(data)
-
-            context.user_data['current_saved_ad_slot'] = slot
-            await query.edit_message_text(f"👇 <b>Step 1:</b> Saved Ad Slot {slot} ke liye Global Dump Channel se <b>1st Message ka Link</b> copy karke yahan bhejein:\n(e.g., https://t.me/c/12345/67)", parse_mode="HTML", reply_markup=cancel_keyboard())
-            return SAVED_AD_LINK_1
-
-        if cd == "groups_batches_menu":
-            await query.edit_message_text("🗂️ Manage Batches & Custom Messages:", reply_markup=build_batches_keyboard(0))
-            return ConversationHandler.END
-            
-        if cd.startswith("batches_page="):
-            page = int(cd.split("=")[1])
-            await query.edit_message_text("🗂️ Manage Batches & Custom Messages:", reply_markup=build_batches_keyboard(page))
-            return ConversationHandler.END
-            
-        if cd.startswith("recent_groups="):
-            page = int(cd.split("=")[1])
-            groups = data.get("groups", {})
-            sorted_groups = sorted(groups.items(), key=lambda x: x[1].get("last_seen", 0), reverse=True)
-            ITEMS_PER_PAGE = 10
-            total_pages = max(1, (len(sorted_groups) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
-            start_idx = page * ITEMS_PER_PAGE
-            end_idx = start_idx + ITEMS_PER_PAGE
-            current_page_groups = sorted_groups[start_idx:end_idx]
-            
-            chat_lines = [f"{'📢' if info.get('type') == 'channel' else '👥'} <b>{info.get('title', 'Unknown')}</b>\n   ↳ ID: <code>{gid}</code> | Added: {info.get('date', 'Unknown')}" for gid, info in current_page_groups]
-            text = f"🕒 <b>All Recent Groups (Page {page+1}/{total_pages}):</b>\n\n" + ("\n\n".join(chat_lines) if chat_lines else "No chats found.")
-            kb = []
-            nav = []
-            if page > 0: nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"recent_groups={page-1}"))
-            if page < total_pages - 1: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"recent_groups={page+1}"))
-            if nav: kb.append(nav)
-            kb.append([InlineKeyboardButton("🔙 Back to Batches", callback_data="groups_batches_menu")])
-            await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
-            return ConversationHandler.END
-
-        if cd == "bat_new":
-            context.user_data['action'] = 'new_batch'
-            await query.edit_message_text("✍️ Send a short name for the new batch (e.g. Batch1) [No Special Characters]:", parse_mode="HTML", reply_markup=cancel_keyboard())
-            return WAIT_INPUT
-
-        if cd.startswith("bat_menu_"):
-            bname = cd.replace("bat_menu_", "", 1)
-            bdata = data.get("batches", {}).get(bname)
-            if not bdata: return ConversationHandler.END
-            txt = (f"🗂️ <b>Batch Dashboard:</b> {bname}\n👥 <b>Chats:</b> {len(bdata['groups'])}\n"
-                   f"📤 <b>Stats:</b> {bdata.get('stats', {}).get('sent', 0)} Sent | {bdata.get('stats', {}).get('failed', 0)} Failed")
-            await query.edit_message_text(txt, reply_markup=build_single_batch_keyboard(bname), parse_mode="HTML")
-            return ConversationHandler.END
-
-        if cd.startswith("bat_autobcast_menu_"):
-            bname = cd.replace("bat_autobcast_menu_", "", 1)
-            bdata = data.get("batches", {}).get(bname)
-            if not bdata: return ConversationHandler.END
-            txt = f"🚀 <b>Auto Broadcast Menu for Batch: {bname}</b>\n\nYahan tum is batch ke Auto Broadcast ki setting kar sakte ho (Start/Stop, Timers, Deletions)."
-            await query.edit_message_text(txt, reply_markup=build_batch_autobcast_keyboard(bname), parse_mode="HTML")
-            return ConversationHandler.END
-
-        if cd.startswith("bat_setdump_"):
-            bname = cd.replace("bat_setdump_", "", 1)
-            context.user_data['current_batch_setup'] = bname
-            await query.edit_message_text(
-                f"📢 <b>Set Dump Channel for Batch: '{bname}'</b>\n\n"
-                f"Kripya sirf is batch ke liye ek naya private Dump Channel banakar uski ID bhejein (e.g., <code>-100123456789</code>).\n"
-                f"Dhyan rahe, is batch ko assign kiye gaye bots is channel me Admin hone chahiye!",
-                parse_mode="HTML", reply_markup=cancel_keyboard()
-            )
-            return BAT_SET_DUMP_CHANNEL
-
-        if cd.startswith("bat_fullinfo_"):
-            bname = cd.replace("bat_fullinfo_", "", 1)
-            bdata = data.get("batches", {}).get(bname)
-            if bdata:
-                assigned_bots = bdata.get("assigned_bots", [])
-                bot_names = []
-                for t in assigned_bots:
-                    bot_names.append(data.get("sub_bots", {}).get(t, {}).get("name", "Unknown Bot"))
-                bot_str = ", ".join(bot_names) if bot_names else "Main Bot"
-                
-                total_groups = len(bdata.get("groups", []))
-                
-                total_members = 0
-                group_list_text = ""
-                for gid in bdata.get("groups", []):
-                    ginfo = data.get("groups", {}).get(gid, {})
-                    members = ginfo.get("members", 0)
-                    total_members += members
-                    group_list_text += f"- {ginfo.get('title', 'Unknown')} ({members} members)\n"
-                
-                if len(group_list_text) > 3000: group_list_text = group_list_text[:3000] + "\n... (truncated)"
-                
-                info_text = (
-                    f"📊 <b>BATCH FULL INFO: {bname}</b>\n\n"
-                    f"🤖 <b>Assigned Bots:</b> {bot_str}\n"
-                    f"👥 <b>Total Groups:</b> {total_groups}\n"
-                    f"👤 <b>Total Members Reached:</b> {total_members}\n"
-                    f"🔗 <b>Linked To Global:</b> {'Yes' if bdata.get('settings', {}).get('link_to_global') else 'No'}\n\n"
-                    f"<b>Group List:</b>\n{group_list_text}"
-                )
-                await send_to_logger(info_text)
-                await query.answer("Full info sent to logger bot!", show_alert=True)
-            return ConversationHandler.END
-
-        if cd.startswith("bat_managebots_"):
-            bname = cd.replace("bat_managebots_", "", 1)
-            await query.edit_message_text(f"🤖 <b>Manage Bots for Batch '{bname}'</b>\n\nJo bots yahan add rahenge, broadcast ke dauran har har group me automatically unme se koi ek randomly select hoga.", parse_mode="HTML", reply_markup=build_batch_managebots_keyboard(bname))
-            return ConversationHandler.END
-
-        if cd.startswith("bat_addbot_"):
-            bname = cd.replace("bat_addbot_", "", 1)
-            context.user_data['target_batch_for_bot'] = bname
-            await query.edit_message_text(f"🤖 <b>Add New Bot to '{bname}'</b>\n\nKripya apne naye bot ka Token bhejein (BotFather se copy karke):", parse_mode="HTML", reply_markup=cancel_keyboard())
-            return BATCH_ADDBOT_TOKEN
-            
-        if cd.startswith("bat_addbotconfirm_"):
-            raw_cd = cd.replace("bat_addbotconfirm_", "", 1)
-            bname, _, token_prefix = raw_cd.rpartition("_")
-            full_token = next((t for t in data["sub_bots"] if t.startswith(token_prefix)), None)
-            if full_token and full_token not in data["batches"][bname].setdefault("assigned_bots", []):
-                data["batches"][bname]["assigned_bots"].append(full_token)
-                save_data(data)
-            await query.edit_message_text(f"✅ Bot added to {bname}.", parse_mode="HTML", reply_markup=build_batch_managebots_keyboard(bname))
-            return ConversationHandler.END
-
-        if cd.startswith("bat_togbot_"):
-            raw_cd = cd.replace("bat_togbot_", "", 1)
-            bname, _, token_prefix = raw_cd.rpartition("_")
-            full_token = next((t for t in data["sub_bots"] if t.startswith(token_prefix)), None)
-            if full_token:
-                assigned = data["batches"][bname].setdefault("assigned_bots", [])
-                if full_token in assigned:
-                    assigned.remove(full_token)
-                else:
-                    assigned.append(full_token)
-                save_data(data)
-            await query.edit_message_reply_markup(reply_markup=build_batch_managebots_keyboard(bname))
-            return ConversationHandler.END
-
-        if cd.startswith("bat_edit_"):
-            raw = cd.replace("bat_edit_", "", 1)
-            bname, _, page = raw.partition("=")
-            page = page if page else "0"
-            await query.edit_message_text(f"✅ Select chats for {bname}:\n(Page {int(page)+1})", parse_mode="HTML", reply_markup=build_batch_edit_keyboard(bname, int(page)))
-            return ConversationHandler.END
-
-        if cd.startswith("btog_"):
-            raw = cd.replace("btog_", "", 1) 
-            bname_gid, _, page_str = raw.partition("=")
-            page_str = page_str if page_str else "0"
-            bname, _, gid = bname_gid.rpartition("_")
-            if bname not in data.get("batches", {}): return ConversationHandler.END
-            
-            batch_groups = data["batches"][bname].setdefault("groups", [])
-            if gid in batch_groups: batch_groups.remove(gid)
-            else:
-                for other_bname, other_bdata in data["batches"].items():
-                    if other_bname != bname and gid in other_bdata.get("groups", []):
-                        other_bdata["groups"].remove(gid)
-                batch_groups.append(gid)
-                
-            save_data(data)
-            await query.edit_message_reply_markup(reply_markup=build_batch_edit_keyboard(bname, int(page_str)))
-            return ConversationHandler.END
-
-        if cd.startswith("bat_setmsgmenu_"):
-            bname = cd.replace("bat_setmsgmenu_", "", 1)
-            bdata = data.get("batches", {}).get(bname, {})
-            if not bdata.get("dump_channel_id"):
-                await query.answer("❌ Pehle is Batch ka alag Dump Channel set karein (Batch Dashboard se)!", show_alert=True)
-                return ConversationHandler.END
-            await query.edit_message_text(f"⚙️ <b>Configure Scrapers ({bname})</b>\n\nYahan tum 3 custom scrapers setup kar sakte ho aur tick (✅) karke choose kar sakte ho ki abhi kaunsa scraper message broadcast karega.", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
-            return ConversationHandler.END
-            
-        if cd.startswith("bat_sel_"):
-            raw = cd.replace("bat_sel_", "", 1)
-            scraper_num, _, bname = raw.partition("_")
-            if bname in data.get("batches", {}):
-                data["batches"][bname]["active_scraper"] = int(scraper_num)
-                save_data(data)
-                await query.edit_message_reply_markup(reply_markup=build_batch_setmsg_keyboard(bname))
-            return ConversationHandler.END
-
-        if cd.startswith("bat_setlink1_"):
-            bname = cd.replace("bat_setlink1_", "", 1)
-            context.user_data['current_batch_setup'] = bname
-            await query.edit_message_text(f"👇 <b>Setup Scraper 1:</b> Batch '{bname}' ke personal Dump Channel se <b>1st Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/67)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 1))
-            return BATCH_CONFIG_LINK_1
-
-        if cd.startswith("bat_setlink2_"):
-            bname = cd.replace("bat_setlink2_", "", 1)
-            context.user_data['current_batch_setup'] = bname
-            await query.edit_message_text(f"👇 <b>Setup Scraper 2:</b> Batch '{bname}' ke personal Dump Channel se <b>2nd Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/68)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 2))
-            return BATCH_CONFIG_LINK_2
-            
-        if cd.startswith("bat_setlink3_"):
-            bname = cd.replace("bat_setlink3_", "", 1)
-            context.user_data['current_batch_setup'] = bname
-            await query.edit_message_text(f"👇 <b>Setup Scraper 3:</b> Batch '{bname}' ke personal Dump Channel se <b>3rd Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/69)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 3))
-            return BATCH_CONFIG_LINK_3
-
-        if cd.startswith("bat_dellink_"):
-            raw_cd = cd.replace("bat_dellink_", "", 1)
-            link_num, _, bname = raw_cd.partition("_")
-            if bname in data.get("batches", {}):
-                data["batches"][bname][f"msg_id_{link_num}"] = None
-                save_data(data)
-                await query.edit_message_text(f"✅ Scraper {link_num} for Batch '{bname}' has been successfully cleared!", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
-            return ConversationHandler.END
-
-        if cd.startswith("bat_usesaved_"):
-            bname = cd.replace("bat_usesaved_", "", 1)
-            await query.edit_message_text(f"📂 Select a Saved Ad for Batch '{bname}':", parse_mode="HTML", reply_markup=build_batch_usesaved_keyboard(bname))
-            return ConversationHandler.END
-
-        if cd.startswith("bat_applysaved_"):
-            raw = cd.replace("bat_applysaved_", "", 1)
-            bname, _, slot = raw.rpartition("_")
-            ad = data.get("saved_ads", {}).get(slot)
-            if ad and bname in data["batches"]:
-                data["batches"][bname]["msg_id_1"] = ad.get("msg_id_1")
-                data["batches"][bname]["msg_id_2"] = ad.get("msg_id_2")
-                data["batches"][bname]["buttons"] = ad.get("buttons", [])
-                
-                data["batches"][bname]["msg_id_3"] = ad.get("msg_id_3", None)
-                
-                if ad.get("bot_token") and ad.get("bot_token") not in data["batches"][bname].setdefault("assigned_bots", []):
-                    data["batches"][bname]["assigned_bots"].append(ad.get("bot_token"))
-                
-                save_data(data)
-                await query.edit_message_text(f"✅ Saved Ad Slot {slot} applied to Batch '{bname}'!", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
-            return ConversationHandler.END
-            
-        if cd.startswith("bat_delmsg_"):
-            bname = cd.replace("bat_delmsg_", "", 1)
-            context.user_data['current_batch_setup'] = bname
-            await query.edit_message_text(f"🧹 Kitne recent messages saare chats se delete karne hain '{bname}' ke liye? \n\n(Ek number bhejein, jaise 10)", parse_mode="HTML", reply_markup=cancel_keyboard())
-            return BATCH_DELETE_N_PROMPT
-
-        if cd.startswith("bat_send_"):
-            bname = cd.replace("bat_send_", "", 1)
-            bdata = data.get("batches", {}).get(bname)
-            if not bdata or not bdata.get("dump_channel_id"):
-                await query.answer("❌ Dump Channel Missing for this Batch!", show_alert=True)
-                return ConversationHandler.END
-            await query.edit_message_text(f"Sending ONE TIME broadcast to batch {bname}...")
-            sent, failed = await broadcast_batch(context, bname)
-            await query.message.reply_text(f"Batch Broadcast complete.\n✅ Sent: {sent}\n❌ Failed: {failed}", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
-            return ConversationHandler.END
-
-        if cd.startswith("bat_tog_bcast_"):
-            bname = cd.replace("bat_tog_bcast_", "", 1)
-            state = data["batches"][bname]["settings"]["auto_broadcast"]
-            data["batches"][bname]["settings"]["auto_broadcast"] = not state
-            save_data(data)
-            manage_batch_job(None, bname, not state)
-            await query.edit_message_reply_markup(reply_markup=build_batch_autobcast_keyboard(bname))
-            return ConversationHandler.END
-
-        if cd.startswith("bat_tog_dellast_"):
-            bname = cd.replace("bat_tog_dellast_", "", 1)
-            state = data["batches"][bname]["settings"].get("delete_last", True)
-            data["batches"][bname]["settings"]["delete_last"] = not state
-            save_data(data)
-            await query.edit_message_reply_markup(reply_markup=build_batch_autobcast_keyboard(bname))
-            return ConversationHandler.END
-
-        if cd.startswith("bat_tog_global_"):
-            bname = cd.replace("bat_tog_global_", "", 1)
-            state = data["batches"][bname]["settings"].get("link_to_global", False)
-            data["batches"][bname]["settings"]["link_to_global"] = not state
-            save_data(data)
-            await query.edit_message_reply_markup(reply_markup=build_single_batch_keyboard(bname))
-            return ConversationHandler.END
-
-        if cd.startswith("bat_tog_del_"):
-            bname = cd.replace("bat_tog_del_", "", 1)
-            state = data["batches"][bname]["settings"].get("auto_delete", True)
-            if not state:
-                context.user_data['current_batch_setup'] = bname
-                await query.edit_message_text("⏱ <b>Auto-Delete ON!</b>\n\nKitne seconds baad message delete hona chahiye? (e.g., 30):", parse_mode="HTML", reply_markup=cancel_keyboard())
-                return BATCH_CHANGE_DEL_TIMER
-            else:
-                data["batches"][bname]["settings"]["auto_delete"] = False
-                save_data(data)
-                await query.edit_message_reply_markup(reply_markup=build_batch_autobcast_keyboard(bname))
-                return ConversationHandler.END
-
-        if cd.startswith("bat_tog_pin_"):
-            bname = cd.replace("bat_tog_pin_", "", 1)
-            state = data["batches"][bname]["settings"]["auto_pin"]
-            data["batches"][bname]["settings"]["auto_pin"] = not state
-            save_data(data)
-            await query.edit_message_reply_markup(reply_markup=build_batch_autobcast_keyboard(bname))
-            return ConversationHandler.END
-            
-        if cd.startswith("bat_delay_"):
-            bname = cd.replace("bat_delay_", "", 1)
-            context.user_data['current_batch_setup'] = bname
-            await query.edit_message_text("⏱ Send new loop delay for this batch in seconds. (e.g., 60, or 60-120 for random):", parse_mode="HTML", reply_markup=cancel_keyboard())
-            return BATCH_CHANGE_DELAY
-
-        if cd.startswith("bat_del_ask_"):
-            bname = cd.replace("bat_del_ask_", "", 1)
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ YES, Delete Batch", callback_data=f"bat_del_confirm_{bname}")],
-                [InlineKeyboardButton("❌ NO, Cancel", callback_data=f"bat_menu_{bname}")]
-            ])
-            await query.edit_message_text(f"⚠️ <b>Confirmation:</b> Are you sure you want to completely delete the batch '{bname}'?", parse_mode="HTML", reply_markup=kb)
-            return ConversationHandler.END
-
-        if cd.startswith("bat_del_confirm_"):
-            bname = cd.replace("bat_del_confirm_", "", 1)
-            if bname in data["batches"]:
-                del data["batches"][bname]
-                save_data(data)
-                manage_batch_job(None, bname, False)
-            await query.edit_message_text(f"🗑️ Batch '{bname}' has been deleted.", parse_mode="HTML", reply_markup=build_batches_keyboard())
-            return ConversationHandler.END
-
-        if cd.startswith("stats"):
-            page_raw = cd.replace("stats", "")
-            page = int(page_raw.replace("=", "")) if "=" in page_raw else 0
-            groups, deleted, users = data.get("groups", {}), data.get("deleted_groups", {}), data.get("users", {})
-            channels_count = sum(1 for g in groups.values() if g.get("type") == "channel")
-            groups_count = len(groups) - channels_count
-            final_text = (
-                f"📊 <b>GLOBAL OVERVIEW</b>\n\n🚀 Total Broadcasts: {data.get('total_broadcasts_sent', 0)}\n"
-                f"👥 Bot Users: {len(users)}\n✅ Active Chats: {len(groups)} (📢 {channels_count} Channels, 👥 {groups_count} Groups)\n"
-                f"❌ Kicked/Deleted: {len(deleted)}\n\n👇 <b>Select a Date to view Chats added on that day:</b>\n(Page {page+1})"
-            )
-            await query.edit_message_text(final_text, parse_mode="HTML", reply_markup=build_date_stats_keyboard(page))
-            return ConversationHandler.END
-
-        if cd.startswith("showdate_"):
-            raw = cd.replace("showdate_", "", 1)
-            date_str, _, page = raw.partition("=")
-            page = page if page else "0"
-            date_groups = [(gid, info) for gid, info in sorted(data.get("groups", {}).items(), key=lambda x: x[1].get("last_seen", 0), reverse=True) if info.get("date") == date_str]
-            
-            ITEMS_PER_PAGE = 10
-            total_pages = max(1, (len(date_groups) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
-            start_idx = int(page) * ITEMS_PER_PAGE
-            
-            chat_lines = [f"🔹 <b>{info.get('title', 'Unknown')}</b> ({'📢 Channel' if info.get('type') == 'channel' else '👥 Group'})\n   ↳ In: {info.get('joins_today', 0)} | Out: {info.get('left_today', 0)}" for gid, info in date_groups[start_idx:start_idx+ITEMS_PER_PAGE]]
-            text = f"📅 <b>Chats added on {date_str} (Page {int(page)+1}/{total_pages}):</b>\n\n" + ("\n\n".join(chat_lines) if chat_lines else "No chats found.")
-            kb, nav = [], []
-            if int(page) > 0: nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"showdate_{date_str}={int(page)-1}"))
-            if int(page) < total_pages - 1: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"showdate_{date_str}={int(page)+1}"))
-            if nav: kb.append(nav)
-            kb.append([InlineKeyboardButton("🔙 Back to Dates", callback_data="stats=0")])
-            await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
-            return ConversationHandler.END
-
-        if cd == "configure_now":
-            if not is_dump_set(data):
-                await query.answer("❌ Pehle Global Dump Channel set karein!", show_alert=True)
-                return ConversationHandler.END
-            await query.edit_message_text("👇 <b>Step 1:</b> Ad ke liye Global Dump Channel se <b>1st Message ka Link</b> copy karke yahan bhejein:\n(e.g., https://t.me/c/123/45)", parse_mode="HTML", reply_markup=cancel_keyboard())
-            return CONFIG_AD_LINK_1
-            
-        if cd == "change_delay":
-            await query.edit_message_text("Send new loop delay in seconds. Example: 30 or 60-120 (for random)", parse_mode="HTML", reply_markup=cancel_keyboard())
-            return CHANGE_DELAY
-            
-        if cd == "change_del_timer":
-            await query.edit_message_text("⏱ <b>Global Auto-Delete Timer</b>\n\nKitne seconds baad messages automatically delete hone chahiye? (e.g., 30)\n(0 bhejein agar disable karna hai):", parse_mode="HTML", reply_markup=cancel_keyboard())
-            return GLOBAL_CHANGE_DEL_TIMER
-            
-        if cd == "toggle_ads":
-            if not data["configured"] or not has_ad_config(data):
-                await query.edit_message_text("Bot is not configured yet.", parse_mode="HTML", reply_markup=configure_keyboard())
-                return ConversationHandler.END
-            data["started"] = not data["started"]
-            save_data(data)
-            if not data["started"]:
-                remove_ads_jobs(None)
-                await query.edit_message_text("Global Auto Broadcast stopped 🔴", parse_mode="HTML", reply_markup=admin_keyboard())
-            else:
-                await query.edit_message_text("Global Auto Broadcast started 🟢 (Looping at interval)", parse_mode="HTML")
-                schedule_ads_job(None, first=0)
-                await query.message.reply_text("Auto broadcast has been triggered.", parse_mode="HTML", reply_markup=admin_keyboard())
-            return ConversationHandler.END
-            
-        if cd == "send_once":
-            if not data["configured"] or not has_ad_config(data):
-                await query.edit_message_text("Bot is not configured yet.", parse_mode="HTML", reply_markup=configure_keyboard())
-                return ConversationHandler.END
-            await query.edit_message_text("Sending Global Broadcast ONCE... (Includes all linked batches) 🚀", parse_mode="HTML")
-            sent, failed = await broadcast_ads(context)
-            await query.message.reply_text(f"One-Time Broadcast complete.\n✅ Sent: {sent}\n❌ Failed: {failed}", parse_mode="HTML", reply_markup=admin_keyboard())
-            return ConversationHandler.END
-            
-        if cd == "change_ad":
-            if not is_dump_set(data):
-                await query.answer("❌ Pehle Global Dump Channel set karein!", show_alert=True)
-                return ConversationHandler.END
-            await query.edit_message_text("👇 <b>Step 1:</b> Naye Global Ad ke liye <b>1st Message ka Link</b> bhejein:\n(e.g., https://t.me/c/123/45)", parse_mode="HTML", reply_markup=cancel_keyboard())
-            return CHANGE_AD_LINK_1
-            
-        if cd == "reconfig_buttons":
-            await query.edit_message_text("How many inline ad buttons? Send 0 to remove.", parse_mode="HTML", reply_markup=cancel_keyboard())
-            return RECONFIG_BUTTON_COUNT
-            
-        if cd == "toggle_auto":
-            data["auto_reply"] = not data["auto_reply"]
-            save_data(data)
-            await query.edit_message_text("Auto Reply toggled.", parse_mode="HTML", reply_markup=admin_keyboard())
-            return ConversationHandler.END
-            
-        if cd == "change_start":
-            if not is_dump_set(data):
-                await query.answer("❌ Pehle Global Dump Channel set karein!", show_alert=True)
-                return ConversationHandler.END
-            await query.edit_message_text("👇 <b>Step 1:</b> Start message ke liye <b>1st Message ka Link</b> bhejein.", parse_mode="HTML", reply_markup=cancel_keyboard())
-            return CHANGE_START_LINK_1
-            
-        if cd == "broadcast_users":
-            await query.edit_message_text(f"Send broadcast message now. It will be sent to {len(data.get('users', {}))} users.", parse_mode="HTML", reply_markup=cancel_keyboard())
-            return BROADCAST_MESSAGE
-
+        await query.edit_message_text(f"✅ Category '{cat}' removed successfully.", parse_mode="HTML", reply_markup=userbots_keyboard())
         return ConversationHandler.END
 
+    if cd.startswith("ub_bview_"):
+        batch = cd.replace("ub_bview_", "")
+        active, dead, offline = 0, 0, 0
+        for ub_id, info in data.get("userbots", {}).items():
+            if info.get("batch", "Unused") == batch:
+                if info.get("status") != "active": dead += 1
+                elif info.get("is_offline"): offline += 1
+                else: active += 1
+                
+        txt = f"🗂️ <b>Batch Dashboard: {batch}</b>\n\n🟢 Active/Online: <b>{active}</b>\n🔴 Dead/Banned: <b>{dead}</b>\n💤 Switch Off (Offline): <b>{offline}</b>\n\n👇 Select an account to manage:"
+        await query.edit_message_text(txt, parse_mode="HTML", reply_markup=userbot_batch_view_keyboard(batch))
+        return ConversationHandler.END
+
+    # --- NEW UPGRADE: BATCH ADD ADMIN CALLBACK ---
+    if cd.startswith("ub_badmin_"):
+        batch = cd.replace("ub_badmin_", "")
+        context.user_data['ub_badmin_batch'] = batch
+        await query.edit_message_text(
+            f"👮 <b>Promote All to Admin (Batch: {batch})</b>\n\n"
+            f"कृपया उन यूज़रनेम (Usernames) की लिस्ट भेजें जिन्हें आप इस बैच के <b>सभी एक्टिव अकाउंट्स</b> के ओनर्ड/एडमिन ग्रुप्स में एक साथ एडमिन बनाना चाहते हैं।\n\n"
+            f"एक यूज़रनेम प्रति लाइन (e.g., @username1\n@username2):", 
+            parse_mode="HTML", reply_markup=cancel_keyboard()
+        )
+        return UB_BATCH_ADD_ADMIN
+
+    if cd == "ub_add_menu":
+        batches = data.get("userbot_batches", [])
+        kb = []
+        row = []
+        for b in batches:
+            row.append(InlineKeyboardButton(f"📁 {b}", callback_data=f"ub_addbatch_{b}"))
+            if len(row) == 2:
+                kb.append(row)
+                row = []
+        if row: kb.append(row)
+        kb.append([InlineKeyboardButton("🔙 Cancel", callback_data="userbots_menu")])
+        
+        await query.edit_message_text("➕ <b>Add Userbot Account</b>\n\n📂 <b>First, choose the Category/Batch</b> where this account(s) should be placed:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
+        return ConversationHandler.END
+        
+    if cd.startswith("ub_addbatch_"):
+        batch = cd.replace("ub_addbatch_", "")
+        context.user_data['pending_add_batch'] = batch
+        await query.edit_message_text(f"Batch: {batch} 📁\n\n✏️ Please send a <b>Custom Name</b> for the account(s) you are about to add (e.g., 'Target Account 1'):\n(Ye naam aapko dashboard me show karega)", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return UB_SET_CUSTOM_NAME
+
+    if cd in ["ub_add_phone", "ub_add_string", "ub_add_bulk", "ub_add_file"]:
+        context.user_data['pending_add_method'] = cd
+        batch = context.user_data.get('pending_add_batch', 'Unused')
+        c_name = context.user_data.get('custom_name', 'Account')
+        
+        if cd == "ub_add_phone":
+            await query.edit_message_text(f"Batch: {batch} 📁\nName: {c_name}\n\n📱 Send the Phone Number in international format (e.g., +91...):", reply_markup=cancel_keyboard())
+            return UB_ADD_PHONE
+        elif cd == "ub_add_string":
+            await query.edit_message_text(f"Batch: {batch} 📁\nName: {c_name}\n\n🔑 Send the Pyrogram Session String:", reply_markup=cancel_keyboard())
+            return UB_ADD_STRING
+        elif cd == "ub_add_bulk":
+            await query.edit_message_text(f"Batch: {batch} 📁\nName base: {c_name}\n\n🗃️ Send Bulk Session Strings (one per line):", reply_markup=cancel_keyboard())
+            return UB_ADD_BULK
+        elif cd == "ub_add_file":
+            await query.edit_message_text(f"Batch: {batch} 📁\nName base: {c_name}\n\n📁 Upload a Pyrogram `.session` file OR `.txt` bulk backup file:", reply_markup=cancel_keyboard())
+            return UB_ADD_FILE
+    
+    if cd.startswith("ub_view_"):
+        ub_id = cd[8:]
+        if ub_id not in data['userbots']: return ConversationHandler.END
+        ub_info = data['userbots'][ub_id]
+        if "phone" not in ub_info and ub_info.get("status") == "active" and not ub_info.get("is_offline"):
+            try:
+                client = Client(name=ub_id, session_string=ub_info["session"], api_id=API_ID, api_hash=API_HASH, in_memory=True)
+                await client.connect()
+                me = await client.get_me()
+                ub_info["phone"] = me.phone_number or "Hidden/Unknown"
+                await client.disconnect()
+                save_data(data)
+            except Exception:
+                ub_info["phone"] = "Error fetching"
+        phone_str = ub_info.get("phone", "Unknown")
+        batch = ub_info.get('batch', 'Unused')
+        status = "🔴 Dead" if ub_info['status'] != "active" else ("💤 Offline" if ub_info.get('is_offline') else "🟢 Active")
+        bc = "📡" if ub_info.get('is_broadcasting') else ""
+        real_n = ub_info.get("real_name", "Unknown")
+        txt = f"📱 <b>Account Dashboard:</b> {ub_info['alias']}\n\n👤 <b>Real Name:</b> {real_n}\n📞 <b>Number:</b> <code>+{phone_str}</code>\n📁 <b>Batch:</b> {batch}\nStatus: {status} {bc}\n🤖 Spambot: {ub_info.get('spambot', 'Unknown')}"
+        await query.edit_message_text(txt, parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
+        return ConversationHandler.END
+        
+    if cd.startswith("ub_rename_"):
+        ub_id = cd[10:]
+        context.user_data['edit_ub_id'] = ub_id
+        await query.edit_message_text("✏️ Send the new Custom Name/Alias for this account:", reply_markup=cancel_keyboard())
+        return UB_RENAME
+        
+    if cd.startswith("ub_bcast_"):
+        ub_id = cd[9:]
+        context.user_data['ub_broadcast_id'] = ub_id
+        await query.edit_message_text("📢 Send the message you want to broadcast to all Admin/Owner groups from this Userbot (Supports HTML):", reply_markup=cancel_keyboard())
+        return UB_BROADCAST_MSG
+        
+    if cd.startswith("ub_addadmin_"):
+        ub_id = cd.replace("ub_addadmin_", "")
+        context.user_data['ub_addadmin_id'] = ub_id
+        await query.edit_message_text("👮 <b>Add Admin (Anonymous)</b>\n\nकृपया उन यूज़रनेम (Usernames) की लिस्ट भेजें जिन्हें आप एडमिन बनाना चाहते हैं।\nएक यूज़रनेम प्रति लाइन (e.g., @username1\n@username2):", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return UB_ADD_ADMIN
+        
+    if cd.startswith("ub_delete_"):
+        ub_id = cd[10:]
+        if ub_id in data["userbots"]:
+            batch = data["userbots"][ub_id].get("batch", "Unused")
+            asyncio.create_task(stop_userbot_listener(ub_id))
+            del data["userbots"][ub_id]
+            save_data(data)
+        await query.edit_message_text("🗑️ Account removed successfully.", parse_mode="HTML", reply_markup=userbot_batch_view_keyboard(batch))
+        return ConversationHandler.END
+        
+    if cd == "ub_refresh":
+        msg = await query.message.reply_text("🔄 Refreshing all active/online accounts... Please wait.")
+        active, dead = 0, 0
+        for u_id, info in data.get("userbots", {}).items():
+            if info.get("is_offline"): continue
+            try:
+                client = Client(name=u_id, session_string=info["session"], api_id=API_ID, api_hash=API_HASH, in_memory=True)
+                await client.connect()
+                me = await client.get_me()
+                info["status"] = "active"
+                info["phone"] = me.phone_number or "Hidden/Unknown"
+                info["real_name"] = me.first_name or "Unknown"
+                active += 1
+                await client.disconnect()
+            except Exception:
+                info["status"] = "dead (banned/logout)"
+                dead += 1
+        save_data(data)
+        await msg.edit_text(f"✅ Refresh Complete.\n\n🟢 Active: {active}\n🔴 Dead: {dead}\n(Offline accounts skipped)")
+        await query.edit_message_reply_markup(reply_markup=userbots_keyboard())
+        return ConversationHandler.END
+
+    if cd == "ub_get_all_dms":
+        await query.edit_message_text("⏳ Fetching latest unread DMs from all active accounts...\nThis will check all bots and send messages to Logger. Please wait...", parse_mode="HTML")
+        asyncio.create_task(run_get_all_dms(update, context))
+        return ConversationHandler.END
+        
+    if cd == "ub_spambot_all":
+        msg = await query.message.reply_text("⏳ Checking SpamBot for ALL active accounts... This will take a while.")
+        results = []
+        for ub_id, info in list(data.get("userbots", {}).items()):
+            if info.get("status") == "active" and not info.get("is_offline"):
+                try:
+                    client = Client(name=ub_id, session_string=info["session"], api_id=API_ID, api_hash=API_HASH, in_memory=True)
+                    await client.connect()
+                    await client.send_message("SpamBot", "/start")
+                    await asyncio.sleep(2)
+                    status_text = "Unknown"
+                    async for sp_msg in client.get_chat_history("SpamBot", limit=1):
+                        txt = sp_msg.text or ""
+                        if "Good news" in txt or "no limits" in txt: status_text = "Clean ✅"
+                        else: status_text = f"Restricted 🔴"
+                    info["spambot"] = status_text
+                    results.append(f"👤 {info['alias']}: {status_text}")
+                    await client.disconnect()
+                except Exception:
+                    results.append(f"👤 {info['alias']}: Error Checking")
+        save_data(data)
+        final_txt = "🤖 <b>SpamBot Global Check Complete</b>\n\n" + "\n".join(results)
+        await msg.edit_text(final_txt, parse_mode="HTML")
+        await send_to_logger(f"📡 <b>Global Spambot Check</b>\n\n" + "\n".join(results).replace('👤', '•'))
+        await query.edit_message_reply_markup(reply_markup=userbots_keyboard())
+        return ConversationHandler.END
+        
+    if cd == "ub_term_all":
+        await query.edit_message_text("⏳ Terminating all other sessions for ALL accounts... Please wait.", parse_mode="HTML")
+        asyncio.create_task(terminate_all_accounts_sessions(update, context))
+        return ConversationHandler.END
+        
+    if cd == "ub_backup_all":
+        batches = {}
+        for ub_id, info in data.get("userbots", {}).items():
+            if info.get("session"):
+                b = info.get("batch", "Unused")
+                batches.setdefault(b, []).append(info.get("session"))
+                
+        if not batches:
+            await query.message.reply_text("❌ No sessions to backup.")
+            return ConversationHandler.END
+            
+        await query.message.reply_text("⏳ Extracting & Sending Pure Strings to Logger Batch-wise...")
+        
+        try:
+            async with TelegramBot(token=LOGGER_BOT_TOKEN) as log_bot:
+                for batch_name, sessions in batches.items():
+                    await log_bot.send_message(
+                        chat_id=LOGGER_CHAT_ID, 
+                        text=f"📂 <b>Batch: {batch_name}</b>\n(Strings will be sent below without extra text)", 
+                        parse_mode="HTML"
+                    )
+                    
+                    current_chunk = ""
+                    for s in sessions:
+                        if len(current_chunk) + len(s) + 2 > 4000:
+                            await log_bot.send_message(chat_id=LOGGER_CHAT_ID, text=current_chunk.strip())
+                            current_chunk = s + "\n\n"
+                            await asyncio.sleep(1) 
+                        else:
+                            current_chunk += s + "\n\n"
+                            
+                    if current_chunk.strip():
+                        await log_bot.send_message(chat_id=LOGGER_CHAT_ID, text=current_chunk.strip())
+            
+            await query.message.reply_text("✅ All Pure Strings sent to Logger Bot successfully!", reply_markup=userbots_keyboard())
+        except Exception as e:
+            logger.error(f"Failed to send backup to logger: {e}")
+            await query.message.reply_text(f"❌ Backup Error: {e}")
+        return ConversationHandler.END
+    
+    if cd.startswith("ub_otp_"):
+        await query.edit_message_text("⏳ Fetching latest OTP/Messages from Telegram (777000)...", parse_mode="HTML")
+        asyncio.create_task(run_fetch_latest_otp(update, context, cd[7:]))
+        return ConversationHandler.END
+
+    if cd.startswith("ub_spambot_"):
+        await query.edit_message_text("⏳ Checking with @SpamBot... Please wait.", parse_mode="HTML")
+        asyncio.create_task(run_spambot_check(update, context, cd[11:]))
+        return ConversationHandler.END
+        
+    if cd.startswith("ub_owner_"):
+        ub_id = cd[9:]
+        await query.edit_message_text("⏳ Scanning groups for Admin/Owner status... Please wait.", parse_mode="HTML")
+        asyncio.create_task(run_check_owner_admin(update, context, ub_id))
+        return ConversationHandler.END
+        
+    if cd.startswith("ub_stats_"):
+        await query.edit_message_text("⏳ Gathering stats... Iterating dialogs, please wait.", parse_mode="HTML")
+        asyncio.create_task(run_userbot_stats(update, context, cd[9:]))
+        return ConversationHandler.END
+        
+    if cd.startswith("ub_termother_"):
+        await query.edit_message_text("⏳ Terminating all other sessions for this account...", parse_mode="HTML")
+        asyncio.create_task(terminate_other_sessions_job(update, context, cd[13:]))
+        return ConversationHandler.END
+        
+    if cd.startswith("ub_togbc_"):
+        ub_id = cd[9:]
+        data["userbots"][ub_id]["is_broadcasting"] = not data["userbots"][ub_id].get("is_broadcasting", False)
+        save_data(data)
+        await query.edit_message_reply_markup(reply_markup=userbot_single_keyboard(ub_id))
+        return ConversationHandler.END
+
+    if cd.startswith("ub_chbatch_"):
+        ub_id = cd[11:]
+        await query.edit_message_text("📂 <b>Select a Batch for this Account:</b>", parse_mode="HTML", reply_markup=ub_batch_selection_keyboard(ub_id))
+        return ConversationHandler.END
+        
+    if cd.startswith("ub_setb_"):
+        parts = cd.split("_")
+        ub_id = parts[2]
+        batch_name = "_".join(parts[3:])
+        if ub_id in data["userbots"]:
+            data["userbots"][ub_id]["batch"] = batch_name
+            save_data(data)
+        await query.edit_message_text(f"✅ Account shifted to batch: <b>{batch_name}</b>", parse_mode="HTML", reply_markup=userbot_single_keyboard(ub_id))
+        return ConversationHandler.END
+        
+    if cd.startswith("ub_newbatch_"):
+        ub_id = cd[12:]
+        context.user_data['pending_ub_id'] = ub_id
+        await query.edit_message_text("✍️ Send a short name for the new Userbot Category (Batch):", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return UB_NEW_BATCH_NAME
+
+    if cd == "subbots_menu":
+        await query.edit_message_text("🤖 <b>Manage Multi-Bot Architecture</b>\n\nAdd extra bot tokens here to assign them to different batches, avoiding rate limits.", parse_mode="HTML", reply_markup=subbots_keyboard())
+        return ConversationHandler.END
+    
+    if cd == "sb_add":
+        await query.edit_message_text("🤖 Send the New Bot Token:", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return SB_ADD_TOKEN
+        
+    if cd.startswith("sb_menu_"):
+        token_prefix = cd[8:]
+        full_token = next((t for t in data["sub_bots"] if t.startswith(token_prefix)), None)
+        if full_token:
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🗑️ Delete Sub-Bot", callback_data=f"sb_del_ask_{token_prefix}")],
+                [InlineKeyboardButton("🔙 Back", callback_data="subbots_menu")]
+            ])
+            await query.edit_message_text(f"🤖 <b>Bot Options:</b> {data['sub_bots'][full_token]['name']}", parse_mode="HTML", reply_markup=kb)
+        return ConversationHandler.END
+
+    if cd.startswith("sb_del_ask_"):
+        token_prefix = cd[11:]
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ YES, Delete Bot", callback_data=f"sb_del_confirm_{token_prefix}")],
+            [InlineKeyboardButton("❌ NO, Cancel", callback_data="subbots_menu")]
+        ])
+        await query.edit_message_text("⚠️ <b>Confirmation:</b> Are you sure you want to delete this bot?", parse_mode="HTML", reply_markup=kb)
+        return ConversationHandler.END
+        
+    if cd.startswith("sb_del_confirm_"):
+        token_prefix = cd[15:]
+        full_token = next((t for t in data["sub_bots"] if t.startswith(token_prefix)), None)
+        if full_token:
+            asyncio.create_task(stop_subbot_listener(full_token)) 
+            del data["sub_bots"][full_token]
+            
+            for bname, bdata in data.get("batches", {}).items():
+                if full_token in bdata.get("assigned_bots", []):
+                    bdata["assigned_bots"].remove(full_token)
+                    
+            save_data(data)
+            await query.edit_message_text("🗑️ Sub-bot removed.", parse_mode="HTML", reply_markup=subbots_keyboard())
+        return ConversationHandler.END
+
+    if cd == "old_settings_menu":
+        await query.edit_message_text("⚙️ Global Configurations", reply_markup=old_settings_keyboard())
+        return ConversationHandler.END
+        
+    if cd == "saved_ads_menu":
+        await query.edit_message_text("💾 <b>Saved Ads Management</b>\n\nConfigure 8 Custom Ads from your Global Dump Channel links to quickly apply them later.", parse_mode="HTML", reply_markup=saved_ads_keyboard())
+        return ConversationHandler.END
+
+    if cd.startswith("saved_ad_edit_"):
+        slot = cd.replace("saved_ad_edit_", "", 1)
+        kb = [[InlineKeyboardButton("🎯 Default (Main Bot)", callback_data=f"set_saved_bot_{slot}_main")]]
+        
+        for token, info in data.get("sub_bots", {}).items():
+            kb.append([InlineKeyboardButton(f"🤖 {info['name']}", callback_data=f"set_saved_bot_{slot}_{token[:10]}")])
+            
+        kb.append([InlineKeyboardButton("🔙 Cancel", callback_data="saved_ads_menu")])
+        await query.edit_message_text(f"🤖 Slot {slot} ke liye kis bot me Ad save karna hai?\n\n(Choose the bot that will broadcast this ad later)", reply_markup=InlineKeyboardMarkup(kb))
+        return ConversationHandler.END
+
+    if cd.startswith("set_saved_bot_"):
+        raw_cd = cd.replace("set_saved_bot_", "", 1)
+        slot, _, token_prefix = raw_cd.partition("_")
+        
+        if not is_dump_set(data):
+            await query.answer("❌ Pehle Admin Menu se Global Dump Channel set karein!", show_alert=True)
+            return ConversationHandler.END
+            
+        bot_token = BOT_TOKEN if token_prefix == "main" else next((t for t in data["sub_bots"] if t.startswith(token_prefix)), BOT_TOKEN)
+        data["saved_ads"][slot]["bot_token"] = bot_token
+        save_data(data)
+
+        context.user_data['current_saved_ad_slot'] = slot
+        await query.edit_message_text(f"👇 <b>Step 1:</b> Saved Ad Slot {slot} ke liye Global Dump Channel se <b>1st Message ka Link</b> copy karke yahan bhejein:\n(e.g., https://t.me/c/12345/67)", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return SAVED_AD_LINK_1
+
+    if cd == "groups_batches_menu":
+        await query.edit_message_text("🗂️ Manage Batches & Custom Messages:", reply_markup=build_batches_keyboard(0))
+        return ConversationHandler.END
+        
+    if cd.startswith("batches_page="):
+        page = int(cd.split("=")[1])
+        await query.edit_message_text("🗂️ Manage Batches & Custom Messages:", reply_markup=build_batches_keyboard(page))
+        return ConversationHandler.END
+        
+    if cd.startswith("recent_groups="):
+        page = int(cd.split("=")[1])
+        groups = data.get("groups", {})
+        sorted_groups = sorted(groups.items(), key=lambda x: x[1].get("last_seen", 0), reverse=True)
+        ITEMS_PER_PAGE = 10
+        total_pages = max(1, (len(sorted_groups) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
+        start_idx = page * ITEMS_PER_PAGE
+        end_idx = start_idx + ITEMS_PER_PAGE
+        current_page_groups = sorted_groups[start_idx:end_idx]
+        
+        chat_lines = [f"{'📢' if info.get('type') == 'channel' else '👥'} <b>{info.get('title', 'Unknown')}</b>\n   ↳ ID: <code>{gid}</code> | Added: {info.get('date', 'Unknown')}" for gid, info in current_page_groups]
+        text = f"🕒 <b>All Recent Groups (Page {page+1}/{total_pages}):</b>\n\n" + ("\n\n".join(chat_lines) if chat_lines else "No chats found.")
+        kb = []
+        nav = []
+        if page > 0: nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"recent_groups={page-1}"))
+        if page < total_pages - 1: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"recent_groups={page+1}"))
+        if nav: kb.append(nav)
+        kb.append([InlineKeyboardButton("🔙 Back to Batches", callback_data="groups_batches_menu")])
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
+        return ConversationHandler.END
+
+    if cd == "bat_new":
+        context.user_data['action'] = 'new_batch'
+        await query.edit_message_text("✍️ Send a short name for the new batch (e.g. Batch1) [No Special Characters]:", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return WAIT_INPUT
+
+    if cd.startswith("bat_menu_"):
+        bname = cd.replace("bat_menu_", "", 1)
+        bdata = data.get("batches", {}).get(bname)
+        if not bdata: return ConversationHandler.END
+        txt = (f"🗂️ <b>Batch Dashboard:</b> {bname}\n👥 <b>Chats:</b> {len(bdata['groups'])}\n"
+               f"📤 <b>Stats:</b> {bdata.get('stats', {}).get('sent', 0)} Sent | {bdata.get('stats', {}).get('failed', 0)} Failed")
+        await query.edit_message_text(txt, reply_markup=build_single_batch_keyboard(bname), parse_mode="HTML")
+        return ConversationHandler.END
+
+    if cd.startswith("bat_autobcast_menu_"):
+        bname = cd.replace("bat_autobcast_menu_", "", 1)
+        bdata = data.get("batches", {}).get(bname)
+        if not bdata: return ConversationHandler.END
+        txt = f"🚀 <b>Auto Broadcast Menu for Batch: {bname}</b>\n\nYahan tum is batch ke Auto Broadcast ki setting kar sakte ho (Start/Stop, Timers, Deletions)."
+        await query.edit_message_text(txt, reply_markup=build_batch_autobcast_keyboard(bname), parse_mode="HTML")
+        return ConversationHandler.END
+
+    if cd.startswith("bat_setdump_"):
+        bname = cd.replace("bat_setdump_", "", 1)
+        context.user_data['current_batch_setup'] = bname
+        await query.edit_message_text(
+            f"📢 <b>Set Dump Channel for Batch: '{bname}'</b>\n\n"
+            f"Kripya sirf is batch ke liye ek naya private Dump Channel banakar uski ID bhejein (e.g., <code>-100123456789</code>).\n"
+            f"Dhyan rahe, is batch ko assign kiye gaye bots is channel me Admin hone chahiye!",
+            parse_mode="HTML", reply_markup=cancel_keyboard()
+        )
+        return BAT_SET_DUMP_CHANNEL
+
+    if cd.startswith("bat_fullinfo_"):
+        bname = cd.replace("bat_fullinfo_", "", 1)
+        bdata = data.get("batches", {}).get(bname)
+        if bdata:
+            assigned_bots = bdata.get("assigned_bots", [])
+            bot_names = []
+            for t in assigned_bots:
+                bot_names.append(data.get("sub_bots", {}).get(t, {}).get("name", "Unknown Bot"))
+            bot_str = ", ".join(bot_names) if bot_names else "Main Bot"
+            
+            total_groups = len(bdata.get("groups", []))
+            
+            total_members = 0
+            group_list_text = ""
+            for gid in bdata.get("groups", []):
+                ginfo = data.get("groups", {}).get(gid, {})
+                members = ginfo.get("members", 0)
+                total_members += members
+                group_list_text += f"- {ginfo.get('title', 'Unknown')} ({members} members)\n"
+            
+            if len(group_list_text) > 3000: group_list_text = group_list_text[:3000] + "\n... (truncated)"
+            
+            info_text = (
+                f"📊 <b>BATCH FULL INFO: {bname}</b>\n\n"
+                f"🤖 <b>Assigned Bots:</b> {bot_str}\n"
+                f"👥 <b>Total Groups:</b> {total_groups}\n"
+                f"👤 <b>Total Members Reached:</b> {total_members}\n"
+                f"🔗 <b>Linked To Global:</b> {'Yes' if bdata.get('settings', {}).get('link_to_global') else 'No'}\n\n"
+                f"<b>Group List:</b>\n{group_list_text}"
+            )
+            await send_to_logger(info_text)
+            await query.answer("Full info sent to logger bot!", show_alert=True)
+        return ConversationHandler.END
+
+    if cd.startswith("bat_managebots_"):
+        bname = cd.replace("bat_managebots_", "", 1)
+        await query.edit_message_text(f"🤖 <b>Manage Bots for Batch '{bname}'</b>\n\nJo bots yahan add rahenge, broadcast ke dauran har har group me automatically unme se koi ek randomly select hoga.", parse_mode="HTML", reply_markup=build_batch_managebots_keyboard(bname))
+        return ConversationHandler.END
+
+    if cd.startswith("bat_addbot_"):
+        bname = cd.replace("bat_addbot_", "", 1)
+        context.user_data['target_batch_for_bot'] = bname
+        await query.edit_message_text(f"🤖 <b>Add New Bot to '{bname}'</b>\n\nKripya apne naye bot ka Token bhejein (BotFather se copy karke):", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return BATCH_ADDBOT_TOKEN
+        
+    if cd.startswith("bat_addbotconfirm_"):
+        raw_cd = cd.replace("bat_addbotconfirm_", "", 1)
+        bname, _, token_prefix = raw_cd.rpartition("_")
+        full_token = next((t for t in data["sub_bots"] if t.startswith(token_prefix)), None)
+        if full_token and full_token not in data["batches"][bname].setdefault("assigned_bots", []):
+            data["batches"][bname]["assigned_bots"].append(full_token)
+            save_data(data)
+        await query.edit_message_text(f"✅ Bot added to {bname}.", parse_mode="HTML", reply_markup=build_batch_managebots_keyboard(bname))
+        return ConversationHandler.END
+
+    if cd.startswith("bat_togbot_"):
+        raw_cd = cd.replace("bat_togbot_", "", 1)
+        bname, _, token_prefix = raw_cd.rpartition("_")
+        full_token = next((t for t in data["sub_bots"] if t.startswith(token_prefix)), None)
+        if full_token:
+            assigned = data["batches"][bname].setdefault("assigned_bots", [])
+            if full_token in assigned:
+                assigned.remove(full_token)
+            else:
+                assigned.append(full_token)
+            save_data(data)
+        await query.edit_message_reply_markup(reply_markup=build_batch_managebots_keyboard(bname))
+        return ConversationHandler.END
+
+    if cd.startswith("bat_edit_"):
+        raw = cd.replace("bat_edit_", "", 1)
+        bname, _, page = raw.partition("=")
+        page = page if page else "0"
+        await query.edit_message_text(f"✅ Select chats for {bname}:\n(Page {int(page)+1})", parse_mode="HTML", reply_markup=build_batch_edit_keyboard(bname, int(page)))
+        return ConversationHandler.END
+
+    if cd.startswith("btog_"):
+        raw = cd.replace("btog_", "", 1) 
+        bname_gid, _, page_str = raw.partition("=")
+        page_str = page_str if page_str else "0"
+        bname, _, gid = bname_gid.rpartition("_")
+        if bname not in data.get("batches", {}): return ConversationHandler.END
+        
+        batch_groups = data["batches"][bname].setdefault("groups", [])
+        if gid in batch_groups: batch_groups.remove(gid)
+        else:
+            for other_bname, other_bdata in data["batches"].items():
+                if other_bname != bname and gid in other_bdata.get("groups", []):
+                    other_bdata["groups"].remove(gid)
+            batch_groups.append(gid)
+            
+        save_data(data)
+        await query.edit_message_reply_markup(reply_markup=build_batch_edit_keyboard(bname, int(page_str)))
+        return ConversationHandler.END
+
+    if cd.startswith("bat_setmsgmenu_"):
+        bname = cd.replace("bat_setmsgmenu_", "", 1)
+        bdata = data.get("batches", {}).get(bname, {})
+        if not bdata.get("dump_channel_id"):
+            await query.answer("❌ Pehle is Batch ka alag Dump Channel set karein (Batch Dashboard se)!", show_alert=True)
+            return ConversationHandler.END
+        await query.edit_message_text(f"⚙️ <b>Configure Scrapers ({bname})</b>\n\nYahan tum 3 custom scrapers setup kar sakte ho aur tick (✅) karke choose kar sakte ho ki abhi kaunsa scraper message broadcast karega.", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
+        return ConversationHandler.END
+        
+    if cd.startswith("bat_sel_"):
+        raw = cd.replace("bat_sel_", "", 1)
+        scraper_num, _, bname = raw.partition("_")
+        if bname in data.get("batches", {}):
+            data["batches"][bname]["active_scraper"] = int(scraper_num)
+            save_data(data)
+            await query.edit_message_reply_markup(reply_markup=build_batch_setmsg_keyboard(bname))
+        return ConversationHandler.END
+
+    if cd.startswith("bat_setlink1_"):
+        bname = cd.replace("bat_setlink1_", "", 1)
+        context.user_data['current_batch_setup'] = bname
+        await query.edit_message_text(f"👇 <b>Setup Scraper 1:</b> Batch '{bname}' ke personal Dump Channel se <b>1st Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/67)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 1))
+        return BATCH_CONFIG_LINK_1
+
+    if cd.startswith("bat_setlink2_"):
+        bname = cd.replace("bat_setlink2_", "", 1)
+        context.user_data['current_batch_setup'] = bname
+        await query.edit_message_text(f"👇 <b>Setup Scraper 2:</b> Batch '{bname}' ke personal Dump Channel se <b>2nd Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/68)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 2))
+        return BATCH_CONFIG_LINK_2
+        
+    if cd.startswith("bat_setlink3_"):
+        bname = cd.replace("bat_setlink3_", "", 1)
+        context.user_data['current_batch_setup'] = bname
+        await query.edit_message_text(f"👇 <b>Setup Scraper 3:</b> Batch '{bname}' ke personal Dump Channel se <b>3rd Message ka Link</b> bhejein:\n(e.g., https://t.me/c/12345/69)\n\n<i>Ya fir neeche diye gaye button se is link ko delete karein.</i>", parse_mode="HTML", reply_markup=set_link_keyboard(bname, 3))
+        return BATCH_CONFIG_LINK_3
+
+    if cd.startswith("bat_dellink_"):
+        raw_cd = cd.replace("bat_dellink_", "", 1)
+        link_num, _, bname = raw_cd.partition("_")
+        if bname in data.get("batches", {}):
+            data["batches"][bname][f"msg_id_{link_num}"] = None
+            save_data(data)
+            await query.edit_message_text(f"✅ Scraper {link_num} for Batch '{bname}' has been successfully cleared!", parse_mode="HTML", reply_markup=build_batch_setmsg_keyboard(bname))
+        return ConversationHandler.END
+
+    if cd.startswith("bat_usesaved_"):
+        bname = cd.replace("bat_usesaved_", "", 1)
+        await query.edit_message_text(f"📂 Select a Saved Ad for Batch '{bname}':", parse_mode="HTML", reply_markup=build_batch_usesaved_keyboard(bname))
+        return ConversationHandler.END
+
+    if cd.startswith("bat_applysaved_"):
+        raw = cd.replace("bat_applysaved_", "", 1)
+        bname, _, slot = raw.rpartition("_")
+        ad = data.get("saved_ads", {}).get(slot)
+        if ad and bname in data["batches"]:
+            data["batches"][bname]["msg_id_1"] = ad.get("msg_id_1")
+            data["batches"][bname]["msg_id_2"] = ad.get("msg_id_2")
+            data["batches"][bname]["buttons"] = ad.get("buttons", [])
+            
+            data["batches"][bname]["msg_id_3"] = ad.get("msg_id_3", None)
+            
+            if ad.get("bot_token") and ad.get("bot_token") not in data["batches"][bname].setdefault("assigned_bots", []):
+                data["batches"][bname]["assigned_bots"].append(ad.get("bot_token"))
+            
+            save_data(data)
+            await query.edit_message_text(f"✅ Saved Ad Slot {slot} applied to Batch '{bname}'!", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
+        return ConversationHandler.END
+        
+    if cd.startswith("bat_delmsg_"):
+        bname = cd.replace("bat_delmsg_", "", 1)
+        context.user_data['current_batch_setup'] = bname
+        await query.edit_message_text(f"🧹 Kitne recent messages saare chats se delete karne hain '{bname}' ke liye? \n\n(Ek number bhejein, jaise 10)", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return BATCH_DELETE_N_PROMPT
+
+    if cd.startswith("bat_send_"):
+        bname = cd.replace("bat_send_", "", 1)
+        bdata = data.get("batches", {}).get(bname)
+        if not bdata or not bdata.get("dump_channel_id"):
+            await query.answer("❌ Dump Channel Missing for this Batch!", show_alert=True)
+            return ConversationHandler.END
+        await query.edit_message_text(f"Sending ONE TIME broadcast to batch {bname}...")
+        sent, failed = await broadcast_batch(context, bname)
+        await query.message.reply_text(f"Batch Broadcast complete.\n✅ Sent: {sent}\n❌ Failed: {failed}", parse_mode="HTML", reply_markup=build_single_batch_keyboard(bname))
+        return ConversationHandler.END
+
+    if cd.startswith("bat_tog_bcast_"):
+        bname = cd.replace("bat_tog_bcast_", "", 1)
+        state = data["batches"][bname]["settings"]["auto_broadcast"]
+        data["batches"][bname]["settings"]["auto_broadcast"] = not state
+        save_data(data)
+        manage_batch_job(None, bname, not state)
+        await query.edit_message_reply_markup(reply_markup=build_batch_autobcast_keyboard(bname))
+        return ConversationHandler.END
+
+    if cd.startswith("bat_tog_dellast_"):
+        bname = cd.replace("bat_tog_dellast_", "", 1)
+        state = data["batches"][bname]["settings"].get("delete_last", True)
+        data["batches"][bname]["settings"]["delete_last"] = not state
+        save_data(data)
+        await query.edit_message_reply_markup(reply_markup=build_batch_autobcast_keyboard(bname))
+        return ConversationHandler.END
+
+    if cd.startswith("bat_tog_global_"):
+        bname = cd.replace("bat_tog_global_", "", 1)
+        state = data["batches"][bname]["settings"].get("link_to_global", False)
+        data["batches"][bname]["settings"]["link_to_global"] = not state
+        save_data(data)
+        await query.edit_message_reply_markup(reply_markup=build_single_batch_keyboard(bname))
+        return ConversationHandler.END
+
+    if cd.startswith("bat_tog_del_"):
+        bname = cd.replace("bat_tog_del_", "", 1)
+        state = data["batches"][bname]["settings"].get("auto_delete", True)
+        if not state:
+            context.user_data['current_batch_setup'] = bname
+            await query.edit_message_text("⏱ <b>Auto-Delete ON!</b>\n\nKitne seconds baad message delete hona chahiye? (e.g., 30):", parse_mode="HTML", reply_markup=cancel_keyboard())
+            return BATCH_CHANGE_DEL_TIMER
+        else:
+            data["batches"][bname]["settings"]["auto_delete"] = False
+            save_data(data)
+            await query.edit_message_reply_markup(reply_markup=build_batch_autobcast_keyboard(bname))
+            return ConversationHandler.END
+
+    if cd.startswith("bat_tog_pin_"):
+        bname = cd.replace("bat_tog_pin_", "", 1)
+        state = data["batches"][bname]["settings"]["auto_pin"]
+        data["batches"][bname]["settings"]["auto_pin"] = not state
+        save_data(data)
+        await query.edit_message_reply_markup(reply_markup=build_batch_autobcast_keyboard(bname))
+        return ConversationHandler.END
+        
+    if cd.startswith("bat_delay_"):
+        bname = cd.replace("bat_delay_", "", 1)
+        context.user_data['current_batch_setup'] = bname
+        await query.edit_message_text("⏱ Send new loop delay for this batch in seconds. (e.g., 60, or 60-120 for random):", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return BATCH_CHANGE_DELAY
+
+    if cd.startswith("bat_del_ask_"):
+        bname = cd.replace("bat_del_ask_", "", 1)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ YES, Delete Batch", callback_data=f"bat_del_confirm_{bname}")],
+            [InlineKeyboardButton("❌ NO, Cancel", callback_data=f"bat_menu_{bname}")]
+        ])
+        await query.edit_message_text(f"⚠️ <b>Confirmation:</b> Are you sure you want to completely delete the batch '{bname}'?", parse_mode="HTML", reply_markup=kb)
+        return ConversationHandler.END
+
+    if cd.startswith("bat_del_confirm_"):
+        bname = cd.replace("bat_del_confirm_", "", 1)
+        if bname in data["batches"]:
+            del data["batches"][bname]
+            save_data(data)
+            manage_batch_job(None, bname, False)
+        await query.edit_message_text(f"🗑️ Batch '{bname}' has been deleted.", parse_mode="HTML", reply_markup=build_batches_keyboard())
+        return ConversationHandler.END
+
+    if cd.startswith("stats"):
+        page_raw = cd.replace("stats", "")
+        page = int(page_raw.replace("=", "")) if "=" in page_raw else 0
+        groups, deleted, users = data.get("groups", {}), data.get("deleted_groups", {}), data.get("users", {})
+        channels_count = sum(1 for g in groups.values() if g.get("type") == "channel")
+        groups_count = len(groups) - channels_count
+        final_text = (
+            f"📊 <b>GLOBAL OVERVIEW</b>\n\n🚀 Total Broadcasts: {data.get('total_broadcasts_sent', 0)}\n"
+            f"👥 Bot Users: {len(users)}\n✅ Active Chats: {len(groups)} (📢 {channels_count} Channels, 👥 {groups_count} Groups)\n"
+            f"❌ Kicked/Deleted: {len(deleted)}\n\n👇 <b>Select a Date to view Chats added on that day:</b>\n(Page {page+1})"
+        )
+        await query.edit_message_text(final_text, parse_mode="HTML", reply_markup=build_date_stats_keyboard(page))
+        return ConversationHandler.END
+
+    if cd.startswith("showdate_"):
+        raw = cd.replace("showdate_", "", 1)
+        date_str, _, page = raw.partition("=")
+        page = page if page else "0"
+        date_groups = [(gid, info) for gid, info in sorted(data.get("groups", {}).items(), key=lambda x: x[1].get("last_seen", 0), reverse=True) if info.get("date") == date_str]
+        
+        ITEMS_PER_PAGE = 10
+        total_pages = max(1, (len(date_groups) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
+        start_idx = int(page) * ITEMS_PER_PAGE
+        
+        chat_lines = [f"🔹 <b>{info.get('title', 'Unknown')}</b> ({'📢 Channel' if info.get('type') == 'channel' else '👥 Group'})\n   ↳ In: {info.get('joins_today', 0)} | Out: {info.get('left_today', 0)}" for gid, info in date_groups[start_idx:start_idx+ITEMS_PER_PAGE]]
+        text = f"📅 <b>Chats added on {date_str} (Page {int(page)+1}/{total_pages}):</b>\n\n" + ("\n\n".join(chat_lines) if chat_lines else "No chats found.")
+        kb, nav = [], []
+        if int(page) > 0: nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"showdate_{date_str}={int(page)-1}"))
+        if int(page) < total_pages - 1: nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"showdate_{date_str}={int(page)+1}"))
+        if nav: kb.append(nav)
+        kb.append([InlineKeyboardButton("🔙 Back to Dates", callback_data="stats=0")])
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
+        return ConversationHandler.END
+
+    if cd == "configure_now":
+        if not is_dump_set(data):
+            await query.answer("❌ Pehle Global Dump Channel set karein!", show_alert=True)
+            return ConversationHandler.END
+        await query.edit_message_text("👇 <b>Step 1:</b> Ad ke liye Global Dump Channel se <b>1st Message ka Link</b> copy karke yahan bhejein:\n(e.g., https://t.me/c/123/45)", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return CONFIG_AD_LINK_1
+        
+    if cd == "change_delay":
+        await query.edit_message_text("Send new loop delay in seconds. Example: 30 or 60-120 (for random)", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return CHANGE_DELAY
+        
+    if cd == "change_del_timer":
+        await query.edit_message_text("⏱ <b>Global Auto-Delete Timer</b>\n\nKitne seconds baad messages automatically delete hone chahiye? (e.g., 30)\n(0 bhejein agar disable karna hai):", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return GLOBAL_CHANGE_DEL_TIMER
+        
+    if cd == "toggle_ads":
+        if not data["configured"] or not has_ad_config(data):
+            await query.edit_message_text("Bot is not configured yet.", parse_mode="HTML", reply_markup=configure_keyboard())
+            return ConversationHandler.END
+        data["started"] = not data["started"]
+        save_data(data)
+        if not data["started"]:
+            remove_ads_jobs(None)
+            await query.edit_message_text("Global Auto Broadcast stopped 🔴", parse_mode="HTML", reply_markup=admin_keyboard())
+        else:
+            await query.edit_message_text("Global Auto Broadcast started 🟢 (Looping at interval)", parse_mode="HTML")
+            schedule_ads_job(None, first=0)
+            await query.message.reply_text("Auto broadcast has been triggered.", parse_mode="HTML", reply_markup=admin_keyboard())
+        return ConversationHandler.END
+        
+    if cd == "send_once":
+        if not data["configured"] or not has_ad_config(data):
+            await query.edit_message_text("Bot is not configured yet.", parse_mode="HTML", reply_markup=configure_keyboard())
+            return ConversationHandler.END
+        await query.edit_message_text("Sending Global Broadcast ONCE... (Includes all linked batches) 🚀", parse_mode="HTML")
+        sent, failed = await broadcast_ads(context)
+        await query.message.reply_text(f"One-Time Broadcast complete.\n✅ Sent: {sent}\n❌ Failed: {failed}", parse_mode="HTML", reply_markup=admin_keyboard())
+        return ConversationHandler.END
+        
+    if cd == "change_ad":
+        if not is_dump_set(data):
+            await query.answer("❌ Pehle Global Dump Channel set karein!", show_alert=True)
+            return ConversationHandler.END
+        await query.edit_message_text("👇 <b>Step 1:</b> Naye Global Ad ke liye <b>1st Message ka Link</b> bhejein:\n(e.g., https://t.me/c/123/45)", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return CHANGE_AD_LINK_1
+        
+    if cd == "reconfig_buttons":
+        await query.edit_message_text("How many inline ad buttons? Send 0 to remove.", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return RECONFIG_BUTTON_COUNT
+        
+    if cd == "toggle_auto":
+        data["auto_reply"] = not data["auto_reply"]
+        save_data(data)
+        await query.edit_message_text("Auto Reply toggled.", parse_mode="HTML", reply_markup=admin_keyboard())
+        return ConversationHandler.END
+        
+    if cd == "change_start":
+        if not is_dump_set(data):
+            await query.answer("❌ Pehle Global Dump Channel set karein!", show_alert=True)
+            return ConversationHandler.END
+        await query.edit_message_text("👇 <b>Step 1:</b> Start message ke liye <b>1st Message ka Link</b> bhejein.", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return CHANGE_START_LINK_1
+        
+    if cd == "broadcast_users":
+        await query.edit_message_text(f"Send broadcast message now. It will be sent to {len(data.get('users', {}))} users.", parse_mode="HTML", reply_markup=cancel_keyboard())
+        return BROADCAST_MESSAGE
+
+    return ConversationHandler.END
 # ==============================================================================
 # 14. NEW AUTO-SESSIONS STATE HANDLERS
 # ==============================================================================
