@@ -719,7 +719,6 @@ def safe_url(url: str) -> str:
 
 def build_start_buttons() -> Optional[InlineKeyboardMarkup]:
     return build_buttons(load_data().get("start_buttons", []))
-
 # ==============================================================================
 # 6. USERBOT CONTINUOUS LISTENER & AUTO-REFRESH (Upgraded for OTP Dump)
 # ==============================================================================
@@ -1370,7 +1369,6 @@ async def broadcast_batch(context: ContextTypes.DEFAULT_TYPE, bname: str) -> tup
                 
     save_data(data)
     return sent_cnt, failed_cnt
-
 # ==============================================================================
 # 11. USERBOTS - SPECIFIC OPERATIONS
 # ==============================================================================
@@ -1787,7 +1785,7 @@ async def run_userbot_batch_add_admin(update: Update, context: ContextTypes.DEFA
 
     await reply.edit_text(f"✅ Batch Add Admin Complete for '{batch}'!\n\n📤 Total Promoted: {total_sent}\n❌ Total Failed: {total_failed}", reply_markup=userbot_batch_view_keyboard(batch))
     return ConversationHandler.END
-   # ==============================================================================
+# ==============================================================================
 # 12. MAIN COMMAND HANDLERS
 # ==============================================================================
 
@@ -3649,6 +3647,14 @@ async def send_restart_auto_backup(token: str, chat_id: int, count: int, session
         logger.error(f"Logger Restart Backup Error: {e}")
 
 async def post_init(application: Application) -> None:
+    # --- FIX ADDED: CLEAR WEBHOOK ---
+    try:
+        await application.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Cleared existing webhook to prevent Conflict error.")
+    except Exception as e:
+        logger.warning(f"Failed to clear webhook (safe to ignore if none existed): {e}")
+    # --------------------------------
+
     data = load_data()
     
     global main_pyro_client
@@ -3840,9 +3846,11 @@ def main():
     print("[+] Random Intervals & Global Priority Override Enabled.")
     print("[+] Dynamic Categories & Custom Userbot Naming Implemented.")
     print("[+] NEW: Auto-Session Listener & Telephone OTP Dumping Active.")
-    print("[+] NEW: Global 'Promote All To Admin (Batch)' Logic Enabled.\n")
+    print("[+] NEW: Global 'Promote All To Admin (Batch)' Logic Enabled.")
+    print("[+] FIX: Webhook Conflict Error Handled Seamlessly.\n")
     
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    # --- FIX ADDED: drop_pending_updates=True TO AVOID POLLING CRASH ---
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
