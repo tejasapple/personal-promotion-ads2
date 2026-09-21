@@ -74,16 +74,16 @@ from telegram.ext import (
 # 1. CONFIGURATIONS & API KEYS
 # ==============================================================================
 
-BOT_TOKEN = ""
-OWNER_ID = 
+BOT_TOKEN = "8882587563:AAGy3mPstZFgHg-qUW6zLrdyJoaurVmQPLk"
+OWNER_ID = 7121137252
 
-LOGGER_BOT_TOKEN = "" 
-LOGGER_CHAT_ID = 
+LOGGER_BOT_TOKEN = "8898885133:AAH9_m7PSVxsNByGI_JMGEB7myQMkQ5Td50" 
+LOGGER_CHAT_ID = 7121137252
 
-API_ID = 
-API_HASH = ""
+API_ID = 2040
+API_HASH = "b18441a1ff607e10a989891a5462e627"
 
-MONGO_URI = ""
+MONGO_URI = "mongodb+srv://Tejas7xx:mrxtejas7@cluster0.akhlgjf.mongodb.net/?appName=Cluster0"
 
 # ==============================================================================
 # 2. CONSTANTS & SYSTEM VARIABLES
